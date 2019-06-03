@@ -1,0 +1,254 @@
+from flask import Flask, request
+from tinydb import TinyDB, Query, where
+
+import json
+from datetime import datetime
+import random
+import string
+
+db = TinyDB('db.json')
+query = Query()
+group = db.table('group')
+res = db.table('reservation')
+conf = db.table('configuration')
+asynct = db.table('asynct')
+app = Flask(__name__)
+
+@app.route('/groups',methods = ['POST'])
+def crgroup():
+    user = json.loads(request.data)
+    g = "".join([random.choice(string.ascii_lowercase) for i in range(8)])+str(random.randint(1,10000))
+    group.insert({'gid' : g, 'resources' : user["resources"]})
+    return 'group-id %s'%g
+
+@app.route('/groups/<gid>',methods = ['PUT','DELETE'])
+def upgroup(gid):
+    if request.method == 'PUT':
+        if group.count(where('gid') == gid):
+            user = json.loads(request.data)
+            group.update({'resources': user["resources"]}, query.gid == gid)
+            return '200 OK'
+        else:
+            return ' gid not found'
+    elif request.method == 'DELETE':
+        if group.count(where('gid') == gid):
+            group.remove(where('gid') == gid)
+            return '200 OK'
+        else:
+            return ' gid not found'
+
+@app.route('/reservations',methods=['POST'])
+def reserve():
+    user = json.loads(request.data)
+    if group.count(where('gid') == user["gid"]):
+        if res.search((where('gid') == user["gid"]) & (where('start-time') == user["start-time"]) & (where('end-time') == user["end-time"])):
+            return 'already reserved'
+        else:
+            r = "".join([random.choice(string.ascii_lowercase) for i in range(8)])+str(random.randint(1,10000))
+            res.insert({'gid': user["gid"], 'rid': r, 'start-time': user["start-time"],  'end-time': user["end-time"]})
+            conf.insert({'gid': user["gid"], 'rid': r,'volume' : '', 'brightness' : '','content' : ''})
+            return 'reservation-id %s' % r
+    else:
+        return 'gid does not exist'
+@app.route('/reservations/<rid>', methods=['PUT','DELETE'])
+def upreserve(rid):
+    if request.method == 'PUT':
+        if res.count(where('rid') == rid):
+            user = json.loads(request.data)
+            res.update({'start-time': user["start-time"], 'end-time' : user["end-time"]},query.rid == rid)
+            return '200 OK'
+        else:
+            return ' rid not found'
+
+    elif request.method == 'DELETE':
+        if res.count(where('rid') == rid):
+            res.remove(query.rid == rid)
+            return '200 OK'
+        else:
+            return 'rid not found'
+
+@app.route('/sync-configurations', methods=['POST','PUT','DELETE'])
+def configure():
+    if request.method == 'POST':
+        user = json.loads(request.data)
+        if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            conf.update({'volume': user["volume"], 'brightness': user["brightness"],'content' : ''},(query.gid == user["gid"]) & (query.rid == user["rid"]))
+            return 'created configurations'
+        else:
+            return 'rid and gid not found'
+    if request.method == 'PUT':
+        user = json.loads(request.data)
+        if conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            conf.update({'volume': user["volume"], 'brightness' : user["brightness"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+            return '200 OK'
+        else:
+            return 'rid and gid not found'
+
+    elif request.method == 'DELETE':
+        user = json.loads(request.data)
+        if conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            conf.remove((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+            return '200 OK'
+        else:
+            return 'gid and rid not found'
+
+@app.route('/sync-write', methods=['POST','PUT','DELETE'])
+def write():
+    if request.method == 'POST':
+        user = json.loads(request.data)
+        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+            return 'data saved'
+        else:
+            return 'rid and gid not found'
+    if request.method == 'PUT':
+        user = json.loads(request.data)
+        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+            return '200 OK'
+        else:
+            return 'rid and gid not found'
+
+    elif request.method == 'DELETE':
+        user = json.loads(request.data)
+        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            conf.update({"content" : ""},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+            return '200 OK'
+        else:
+            return 'gid and rid not found'
+
+@app.route('/operational-status', methods=['POST'])
+def opstat():
+    user = json.loads(request.data)
+    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+        if conf.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            st = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+            if st[0]['content'] != "":
+                return 'content : %s' % st[0]['content']
+            else:
+                return 'content not written'
+        else:
+            return 'content not written'
+    else:
+        return 'rid and gid not found'
+
+@app.route('/device-status',methods = ['POST'])
+def devstat():
+    user = json.loads(request.data)
+    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+        if conf.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            st = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+            return 'volume : %s , brightness : %s'% (st[0]['volume'],st[0]['brightness'])
+        else:
+            return 'no configurations created'
+    else:
+        return 'rid and gid not found'
+
+@app.route('/async-configurations', methods=['POST'])
+def asyncconfigure():
+    user = json.loads(request.data)
+    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+        asynct.insert({'rid': user["rid"], 'gid': user["gid"], 'volume': user["volume"], 'brightness': user["brightness"]})
+        return '200 OK'
+    else:
+        return 'rid and gid not found'
+
+@app.route('/async-write',methods = ['POST'])
+def asyncwrite():
+    user = json.loads(request.data)
+    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+        asynct.update({'rid': user["rid"], 'gid': user["gid"], 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+        return '200 OK'
+    else:
+        return 'rid and gid not found'
+
+@app.route('/open/channel',methods = ['POST'])
+def opchannel():
+    user = json.loads(request.data)
+    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+        now = datetime.now()
+        info1 = res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+        info = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+        st = info1[0]['start-time']
+        et = info1[0]['end-time']
+        st_obj = datetime.strptime(st, ' %Y-%m-%d %H:%M:%S')
+        et_obj = datetime.strptime(et, '%Y-%m-%d %H:%M:%S')
+        if (now >= st_obj) & (et_obj >= now ):
+            cid = "".join([random.choice(string.ascii_lowercase) for i in range(8)])+str(random.randint(1,1000))
+            res.update({"cid" : cid}, (query.rid == user["rid"]) & (query.gid == user["gid"]))
+            info = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+            if info[0]["content"] == "" :
+                obj = asynct.search((query.rid == user["rid"]) & (query.gid == user["gid"]))
+                conf.update({'content' : obj[0]['content']},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+            if info[0]['brightness'] == '':
+                obj = asynct.search((query.rid == user["rid"]) & (query.gid == user["gid"]))
+                group.update({'brightness': obj[0]['brightness']}, (query.rid == user["rid"]) & (query.gid == user["gid"]))
+            if info[0]['volume'] == '':
+                obj = asynct.search((query.rid == user["rid"]) & (query.gid == user["gid"]))
+                group.update({'volume': obj[0]['volume']}, (query.rid == user["rid"]) & (query.gid == user["gid"]))
+            return 'channel-id is %s'%cid
+        else:
+            return 'time outside reservation time'
+    else:
+        return 'gid and rid not found'
+@app.route('/close/channel',methods = ['POST'])
+def clchannel():
+    user = json.loads(request.data)
+    if res.count((where('rid') == user["rid"]) | (where('cid') == user["cid"])):
+        now = datetime.now()
+        info = res.search((where('rid') == user["rid"]) | (where('cid') == user["cid"]))
+        et = info[0]['end-time']
+        et_obj = datetime.strptime(et, '%Y-%m-%d %H:%M:%S')
+        if ( now > et_obj):
+            res.remove((where('cid') == user["cid"]) | (where ('rid') == user["rid"]))
+            conf.remove(where ('rid') == user["rid"])
+            asynct.remove(where('rid') == user["rid"])
+            return 'reservation time exceeded'
+        else:
+            res.remove((where('cid') == user["cid"]) | (where('rid') == user["rid"]))
+            conf.remove(where('rid') == user["rid"])
+            asynct.remove(where('rid') == user["rid"])
+            return 'channel closed'
+    else:
+        return 'cid or rid does not exist'
+
+@app.route('/suspend/channel', methods=['POST'])
+def schannel():
+    user = json.loads(request.data)
+    if res.count((where('rid') == user["rid"]) | (where('cid') == user["cid"])):
+        now = datetime.now()
+        info = res.search((where('rid') == user["rid"]) | (where('cid') == user["cid"]))
+        et = info[0]['end-time']
+        et_obj = datetime.strptime(et, '%Y-%m-%d %H:%M:%S')
+        now_obj = now.strftime('%Y-%m-%d %H:%M:%S')
+        if (now < et_obj):
+            res.update({"pause-time": now_obj, "status": "paused"}, (query.rid == user["rid"]) | (query.cid == user["cid"]))
+            return 'channel suspended'
+        else:
+            return 'reservation time exceeded '
+    else:
+        return 'cid or rid does not exist'
+
+
+@app.route('/resume/channel', methods=['POST'])
+def rchannel():
+    user = json.loads(request.data)
+    if res.count((where('rid') == user["rid"]) | (where('cid') == user["cid"])):
+        now = datetime.now()
+        info = res.search((where('rid') == user["rid"]) | (where('cid') == user["cid"]))
+        et = info[0]['end-time']
+        et_obj = datetime.strptime(et, '%Y-%m-%d %H:%M:%S')
+        if (now > et_obj):
+            res.remove((where('cid') == user["cid"]) | (where('rid') == user["rid"]))
+            conf.remove(where('rid') == user["rid"])
+            asynct.remove(where('rid') == user["rid"])
+            return 'reservation time exceeded'
+        else:
+            res.update({"pause-time": "", "status": "resume"}, (query.rid == user["rid"]) | (query.cid == user["cid"]))
+            return 'channel resumed'
+
+    else:
+        return 'cid or rid does not exist'
+
+if __name__ == '__main__':
+    app.run(debug = True)
