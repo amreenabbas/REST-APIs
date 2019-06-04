@@ -1,3 +1,5 @@
+#!/usr/bin/python
+
 from flask import Flask, request
 from tinydb import TinyDB, Query, where
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -16,6 +18,9 @@ asynct = db.table('asynct')
 users = db.table('users')
 app = Flask(__name__)
 auth = HTTPBasicAuth()
+
+#TODO: Generate a password. If you need to calculate hash then also use a salt
+#Rename the API to something else since this is a placeholder
 @app.route("/adduser", methods=["POST"])
 def add_user():
     body = json.loads(request.data)
@@ -26,6 +31,7 @@ def add_user():
     users.insert({"id": user_id, "password": generate_password_hash(user_password)})
     return 'user added,status=201'
 
+#TODO: Remove this API
 @app.route("/removeuser", methods=["POST"])
 def rem_user():
     body = json.loads(request.data)
@@ -36,6 +42,7 @@ def rem_user():
         return 'user removed, status=200'
     return 'invalid id or password'
 
+#TODO: If you use a salt you'll have to change the logic here
 @app.route("/login", methods=["POST"])
 def login():
 
@@ -47,6 +54,7 @@ def login():
         return 'status=403'
 
 
+#TODO: Use string.digits
 @app.route('/groups',methods = ['POST'])
 @auth.login_required
 def crgroup():
@@ -55,6 +63,9 @@ def crgroup():
     group.insert({'gid' : g, 'resources' : user["resources"]})
     return 'group-id %s'%g
 
+#TODO: Check for user id and gid to prevent unauthorised operations.
+#It would be better if every api takes username and password as headers.
+#At least for the time being, so that we can avoid situations like these
 @app.route('/groups/<gid>',methods = ['PUT','DELETE'])
 @auth.login_required
 def upgroup(gid):
@@ -72,6 +83,8 @@ def upgroup(gid):
         else:
             return ' gid not found'
 
+#TODO: Same as groups here
+#Also use epoch instead of plain formats
 @app.route('/reservations',methods=['POST'])
 @auth.login_required
 def reserve():
@@ -82,10 +95,13 @@ def reserve():
         else:
             r = "".join([random.choice(string.ascii_lowercase) for i in range(8)])+str(random.randint(1,10000))
             res.insert({'gid': user["gid"], 'rid': r, 'start-time': user["start-time"],  'end-time': user["end-time"]})
+	    #TODO: Check for uid. Do not hardcode configs
             conf.insert({'gid': user["gid"], 'rid': r,'volume' : '', 'brightness' : '','content' : ''})
             return 'reservation-id %s' % r
     else:
         return 'gid does not exist'
+
+#TODO: Please check user is as well
 @app.route('/reservations/<rid>', methods=['PUT','DELETE'])
 @auth.login_required
 def upreserve(rid):
@@ -104,11 +120,13 @@ def upreserve(rid):
         else:
             return 'rid not found'
 
+#TODO: Do not hardcode configs here. Let them be generic
 @app.route('/sync-configurations', methods=['POST','PUT','DELETE'])
 @auth.login_required
 def configure():
     if request.method == 'POST':
         user = json.loads(request.data)
+	#TODO: Check if user has an active channel
         if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
             conf.update({'volume': user["volume"], 'brightness': user["brightness"],'content' : ''},(query.gid == user["gid"]) & (query.rid == user["rid"]))
             return 'created configurations'
@@ -135,6 +153,7 @@ def configure():
 def write():
     if request.method == 'POST':
         user = json.loads(request.data)
+	#TODO: Check if a channel has been created
         if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
             conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
             return 'data saved'
@@ -156,6 +175,7 @@ def write():
         else:
             return 'gid and rid not found'
 
+#TODO: Operational status can also be on a specific device 
 @app.route('/operational-status', methods=['POST'])
 @auth.login_required
 def opstat():
@@ -168,10 +188,11 @@ def opstat():
             else:
                 return 'content not written'
         else:
-            return 'content not written'
+            return 'content not written' #??
     else:
         return 'rid and gid not found'
 
+#TODO: What is the difference between the previous API and this?
 @app.route('/device-status',methods = ['POST'])
 @auth.login_required
 def devstat():
@@ -185,6 +206,7 @@ def devstat():
     else:
         return 'rid and gid not found'
 
+#TODO: Don't have hard coded configs
 @app.route('/async-configurations', methods=['POST'])
 @auth.login_required
 def asyncconfigure():
@@ -195,6 +217,7 @@ def asyncconfigure():
     else:
         return 'rid and gid not found'
 
+#TODO: Same here
 @app.route('/async-write',methods = ['POST'])
 @auth.login_required
 def asyncwrite():
@@ -205,6 +228,7 @@ def asyncwrite():
     else:
         return 'rid and gid not found'
 
+#TODO: Where is priority checked?
 @app.route('/open/channel',methods = ['POST'])
 @auth.login_required
 def opchannel():
