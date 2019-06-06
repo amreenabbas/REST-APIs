@@ -8,10 +8,14 @@ from flask_httpauth import HTTPBasicAuth
 from datetime import datetime
 import random
 import string
+import time
+import hashlib
 
 db = TinyDB('db.json')
 query = Query()
 group = db.table('group')
+device = db.table('device')
+dstate = db.table('dstate')
 res = db.table('reservation')
 conf = db.table('configuration')
 asynct = db.table('asynct')
@@ -19,307 +23,417 @@ users = db.table('users')
 app = Flask(__name__)
 auth = HTTPBasicAuth()
 
-#TODO: Generate a password. If you need to calculate hash then also use a salt
-#Rename the API to something else since this is a placeholder
-@app.route("/adduser", methods=["POST"])
+
+@app.route("/signup", methods=["POST"])
 def add_user():
     body = json.loads(request.data)
     user_id = body["id"]
-    user_password = body["password"]
     if users.search(query.id == user_id):
         return 'Id already exists, status=409'
-    users.insert({"id": user_id, "password": generate_password_hash(user_password)})
-    return 'user added,status=201'
+    user_password = "password"
+    salt = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(5)])
+    h = user_id + salt + user_password
+    users.insert({"id": user_id, "password": generate_password_hash(h),"salt" : salt})
+    return 'user added, password : %s ,status=201'% user_password
 
-#TODO: Remove this API
-@app.route("/removeuser", methods=["POST"])
-def rem_user():
-    body = json.loads(request.data)
-    user_id = body["id"]
-    user_password = body["password"]
-    if users.search(query.id == user_id):
-        users.remove(where('id') == user_id)
-        return 'user removed, status=200'
-    return 'invalid id or password'
 
-#TODO: If you use a salt you'll have to change the logic here
 @app.route("/login", methods=["POST"])
 def login():
-
     user_ = json.loads(request.data)
-    info = users.search(where('id') == user_['id'])
-    if check_password_hash(info[0]['password'],user_['password']):
+    if verify_password(user_["id"],user_["password"]):
         return 'status=200'
     else:
-        return 'status=403'
+        return 'invalid id or password, status=403'
 
+def verify_password(uid,pwd):
+    info = users.search(where('id') == uid)
+    salt = info[0]['salt']
+    passw = uid + salt + pwd
+    if check_password_hash(passw, info[0]['password']):
+        return True
+    else:
+        return False
 
-#TODO: Use string.digits
 @app.route('/groups',methods = ['POST'])
 @auth.login_required
 def crgroup():
     user = json.loads(request.data)
-    g = "".join([random.choice(string.ascii_lowercase) for i in range(8)])+str(random.randint(1,10000))
-    group.insert({'gid' : g, 'resources' : user["resources"]})
-    return 'group-id %s'%g
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
+        g = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
+        group.insert({'gid' : g, 'resources' : user["resources"], 'uid' : uid})
+        return 'group-id %s'%g
+    else:
+        return 'invalid user id or password'
+    
 
-#TODO: Check for user id and gid to prevent unauthorised operations.
-#It would be better if every api takes username and password as headers.
-#At least for the time being, so that we can avoid situations like these
 @app.route('/groups/<gid>',methods = ['PUT','DELETE'])
 @auth.login_required
 def upgroup(gid):
     if request.method == 'PUT':
-        if group.count(where('gid') == gid):
-            user = json.loads(request.data)
-            group.update({'resources': user["resources"]}, query.gid == gid)
-            return '200 OK'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
+            if group.count((where('gid') == gid) & (where('uid') == uid)):
+                user = json.loads(request.data)
+                group.update({'resources': user["resources"]}, query.gid == gid)
+                return '200 OK'
+            else:
+                return 'invalid user id or gid'
         else:
-            return ' gid not found'
+            return 'invalid user id or password'
+        
     elif request.method == 'DELETE':
-        if group.count(where('gid') == gid):
-            group.remove(where('gid') == gid)
-            return '200 OK'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
+            if group.count(where('gid') == gid):
+                group.remove(where('gid') == gid)
+                return '200 OK'
+            else:
+                return ' gid not found'
         else:
-            return ' gid not found'
+            return 'invalid user id or password'
+        
 
-#TODO: Same as groups here
-#Also use epoch instead of plain formats
 @app.route('/reservations',methods=['POST'])
 @auth.login_required
 def reserve():
     user = json.loads(request.data)
-    if group.count(where('gid') == user["gid"]):
-        if res.search((where('gid') == user["gid"]) & (where('start-time') == user["start-time"]) & (where('end-time') == user["end-time"])):
-            return 'already reserved'
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    st_obj = datetime.strptime(user["start-time"], ' %Y-%m-%d %H:%M:%S')
+    et_obj = datetime.strptime(user["end-time"], ' %Y-%m-%d %H:%M:%S')
+    s = time.mktime(st_obj.timetuple())
+    e = time.mktime(et_obj.timetuple())
+    if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
+        if group.count(where('gid') == user["gid"]):
+            if res.search((where('gid') == user["gid"]) & (where('start-time') <= user["start-time"]) & (where('end-time') >= user["end-time"])):
+                return 'already reserved'
+            else:
+                r = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
+                p = priority(uid)
+                res.insert({'gid': user["gid"], 'rid': r, 'start-time': s,  'end-time': e, 'priority': p,'uid' : uid})
+                return 'reservation-id %s' % r
         else:
-            r = "".join([random.choice(string.ascii_lowercase) for i in range(8)])+str(random.randint(1,10000))
-            res.insert({'gid': user["gid"], 'rid': r, 'start-time': user["start-time"],  'end-time': user["end-time"]})
-	    #TODO: Check for uid. Do not hardcode configs
-            conf.insert({'gid': user["gid"], 'rid': r,'volume' : '', 'brightness' : '','content' : ''})
-            return 'reservation-id %s' % r
+            return 'invalid gid or user id'
     else:
-        return 'gid does not exist'
+        return 'invalid user id or password'
 
-#TODO: Please check user is as well
 @app.route('/reservations/<rid>', methods=['PUT','DELETE'])
 @auth.login_required
 def upreserve(rid):
     if request.method == 'PUT':
-        if res.count(where('rid') == rid):
-            user = json.loads(request.data)
-            res.update({'start-time': user["start-time"], 'end-time' : user["end-time"]},query.rid == rid)
-            return '200 OK'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
+            if res.count((where('rid') == rid) & (where('id') == uid)):
+                user = json.loads(request.data)
+                st_obj = datetime.strptime(user["start-time"], ' %Y-%m-%d %H:%M:%S')
+                et_obj = datetime.strptime(user["end-time"], ' %Y-%m-%d %H:%M:%S')
+                s = time.mktime(st_obj.timetuple())
+                e = time.mktime(et_obj.timetuple())
+                res.update({'start-time': s, 'end-time': e},query.rid == rid)
+                return '200 OK'
+            else:
+                return 'invalid user id or rid'
         else:
-            return ' rid not found'
-
+            return 'invalid user id or password'
+        
     elif request.method == 'DELETE':
-        if res.count(where('rid') == rid):
-            res.remove(query.rid == rid)
-            return '200 OK'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
+            if res.count((where('rid') == rid) & (where('uid') == uid)):
+                res.remove((query.rid == rid) & (query.uid == uid))
+                return '200 OK'
+            else:
+                return 'invalid user id or rid'
         else:
-            return 'rid not found'
+            return 'invalid user id or password'
 
-#TODO: Do not hardcode configs here. Let them be generic
 @app.route('/sync-configurations', methods=['POST','PUT','DELETE'])
 @auth.login_required
 def configure():
     if request.method == 'POST':
         user = json.loads(request.data)
-	#TODO: Check if user has an active channel
-        if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            conf.update({'volume': user["volume"], 'brightness': user["brightness"],'content' : ''},(query.gid == user["gid"]) & (query.rid == user["rid"]))
-            return 'created configurations'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+            if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                conf.insert({'configurations' : user["configurations"], 'gid' : user["gid"], 'rid' : user["rid"]})
+                return 'created configurations'
+            else:
+                return 'rid and gid not found or channel not active'
         else:
-            return 'rid and gid not found'
+            return 'invalid user id or password'
+        
     if request.method == 'PUT':
         user = json.loads(request.data)
-        if conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            conf.update({'volume': user["volume"], 'brightness' : user["brightness"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-            return '200 OK'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+            if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                conf.update({'configurations' : user["configurations"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+                return '200 OK'
+            else:
+                return 'rid and gid not found or channel not active'
         else:
-            return 'rid and gid not found'
-
+            return 'invalid user id or password'
+        
     elif request.method == 'DELETE':
         user = json.loads(request.data)
-        if conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            conf.remove((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
-            return '200 OK'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+            if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                conf.remove((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+                return '200 OK'
+            else:
+                return 'gid and rid not found or channel not active'
         else:
-            return 'gid and rid not found'
+            return 'invalid user id or password'
 
 @app.route('/sync-write', methods=['POST','PUT','DELETE'])
 @auth.login_required
 def write():
     if request.method == 'POST':
         user = json.loads(request.data)
-	#TODO: Check if a channel has been created
-        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-            return 'data saved'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+            if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+                return 'data saved'
+            else:
+                return 'rid and gid not found or channel not active'
         else:
-            return 'rid and gid not found'
+            return 'invalid user id or password'
+        
     if request.method == 'PUT':
         user = json.loads(request.data)
-        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-            return '200 OK'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+            if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                conf.update({'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+                return '200 OK'
+            else:
+                return 'rid and gid not found or channel not active'
         else:
-            return 'rid and gid not found'
+            return 'invalid user id or password'
 
     elif request.method == 'DELETE':
         user = json.loads(request.data)
-        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            conf.update({"content" : ""},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-            return '200 OK'
+        uid = request.headers['id']
+        pwd = request.headers['password']
+        if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+            if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                conf.update({"content" : ""},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+                return '200 OK'
+            else:
+                return 'gid and rid not found or channel not active'
         else:
-            return 'gid and rid not found'
+            return 'invalid user id or password'
 
-#TODO: Operational status can also be on a specific device 
 @app.route('/operational-status', methods=['POST'])
 @auth.login_required
 def opstat():
     user = json.loads(request.data)
-    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-        if conf.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            st = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
-            if st[0]['content'] != "":
-                return 'content : %s' % st[0]['content']
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            st = dstate.count (where('gid') == user["gid"])
+            if st :
+                return 'device status : active , rid : %s' % st[0]['rid']
             else:
-                return 'content not written'
+                return 'device status : inactive'
         else:
-            return 'content not written' #??
+            return 'rid and gid not found'
     else:
-        return 'rid and gid not found'
-
-#TODO: What is the difference between the previous API and this?
+        return 'invalid user id or password'
+    
 @app.route('/device-status',methods = ['POST'])
 @auth.login_required
 def devstat():
     user = json.loads(request.data)
-    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-        if conf.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            st = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
-            return 'volume : %s , brightness : %s'% (st[0]['volume'],st[0]['brightness'])
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            if conf.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+                st = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+                return '%s' % st
+            else:
+                return 'no configurations created'
         else:
-            return 'no configurations created'
+            return 'rid and gid not found'
     else:
-        return 'rid and gid not found'
+        return 'invalid user id or password'
 
-#TODO: Don't have hard coded configs
 @app.route('/async-configurations', methods=['POST'])
 @auth.login_required
 def asyncconfigure():
     user = json.loads(request.data)
-    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-        asynct.insert({'rid': user["rid"], 'gid': user["gid"], 'volume': user["volume"], 'brightness': user["brightness"]})
-        return '200 OK'
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            asynct.insert({'rid': user["rid"], 'gid': user["gid"], 'configurations': user["configurations"]})
+            return '200 OK'
+        else:
+            return 'rid and gid not found'
     else:
-        return 'rid and gid not found'
+        return 'invalid user id or password'
 
-#TODO: Same here
 @app.route('/async-write',methods = ['POST'])
 @auth.login_required
 def asyncwrite():
     user = json.loads(request.data)
-    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-        asynct.update({'rid': user["rid"], 'gid': user["gid"], 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-        return '200 OK'
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            asynct.update({'rid': user["rid"], 'gid': user["gid"], 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+            return '200 OK'
+        else:
+            return 'rid and gid not found'
     else:
-        return 'rid and gid not found'
+        return 'invalid user id or password'
+    
 
-#TODO: Where is priority checked?
 @app.route('/open/channel',methods = ['POST'])
 @auth.login_required
 def opchannel():
     user = json.loads(request.data)
-    if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-        now = datetime.now()
-        info1 = res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
-        info = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
-        st = info1[0]['start-time']
-        et = info1[0]['end-time']
-        st_obj = datetime.strptime(st, ' %Y-%m-%d %H:%M:%S')
-        et_obj = datetime.strptime(et, '%Y-%m-%d %H:%M:%S')
-        if (now >= st_obj) & (et_obj >= now ):
-            cid = "".join([random.choice(string.ascii_lowercase) for i in range(8)])+str(random.randint(1,1000))
-            res.update({"cid" : cid}, (query.rid == user["rid"]) & (query.gid == user["gid"]))
-            info = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
-            if info[0]["content"] == "" :
-                obj = asynct.search((query.rid == user["rid"]) & (query.gid == user["gid"]))
-                conf.update({'content' : obj[0]['content']},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-            if info[0]['brightness'] == '':
-                obj = asynct.search((query.rid == user["rid"]) & (query.gid == user["gid"]))
-                group.update({'brightness': obj[0]['brightness']}, (query.rid == user["rid"]) & (query.gid == user["gid"]))
-            if info[0]['volume'] == '':
-                obj = asynct.search((query.rid == user["rid"]) & (query.gid == user["gid"]))
-                group.update({'volume': obj[0]['volume']}, (query.rid == user["rid"]) & (query.gid == user["gid"]))
-            return 'channel-id is %s'%cid
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
+        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+            now = datetime.now()
+            info1 = res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+            st = time.mktime(info1[0]['start-time'].timetuple())
+            et = time.mktime(info1[0]['end-time'].timetuple())
+            if (now >= st) & (et >= now):
+                r = dstate.search(where('gid') == user["gid"])
+                if r:
+                    t = res.search(where('rid') == r["rid"])
+                    if info1["priority"] > t["priority"]:
+                        cid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
+                        res.update({'cid' : cid}, (query.rid == user["rid"]) & (query.gid == user["gid"]))
+                        info = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+                        if not info:
+                            obj = asynct.search((query.rid == user["rid"]) & (query.gid == user["gid"]))
+                            conf.insert({'configurations': obj[0]['configurations'],'content' : obj[0]['content'], 'rid' : user["rid"], 'gid' : user["gid"]})
+                        dstate.update({'state' : "paused"},(query.gid == r["gid"]) & (query.rid == r["rid"]))
+                        dstate.insert({'cid' : cid, 'rid' : user["rid"], 'state' : 'active','gid' : user["gid"]})
+                        return 'channel-id is %s'%cid
+                    else:
+                        return 'high priority task executing'
+                else:
+                    cid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
+                    res.update({"cid": cid}, (query.rid == user["rid"]) & (query.gid == user["gid"]))
+                    info = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+                    if not info:
+                        obj = asynct.search((query.rid == user["rid"]) & (query.gid == user["gid"]))
+                        conf.insert({'configurations': obj[0]['configurations'], 'content': obj[0]['content'], 'rid': user["rid"], 'gid': user["gid"]})
+                    dstate.insert({'cid': cid, 'rid': user["rid"], 'state': 'active', 'gid': user["gid"]})
+                    return 'channel-id is %s' % cid
+            else:
+                return 'time outside reservation time'
         else:
-            return 'time outside reservation time'
+            return 'gid and rid not found'
     else:
-        return 'gid and rid not found'
+        return 'invalid user id or password'
+    
 @app.route('/close/channel',methods = ['POST'])
 @auth.login_required
 def clchannel():
     user = json.loads(request.data)
-    if res.count((where('rid') == user["rid"]) | (where('cid') == user["cid"])):
-        now = datetime.now()
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
         info = res.search((where('rid') == user["rid"]) | (where('cid') == user["cid"]))
-        et = info[0]['end-time']
-        et_obj = datetime.strptime(et, '%Y-%m-%d %H:%M:%S')
-        if ( now > et_obj):
-            res.remove((where('cid') == user["cid"]) | (where ('rid') == user["rid"]))
-            conf.remove(where ('rid') == user["rid"])
-            asynct.remove(where('rid') == user["rid"])
-            return 'reservation time exceeded'
+        if info:
+            n = datetime.now()
+            now = time.mktime(n.timetuple())
+            et_obj = info[0]['end-time']
+            if ( now > et_obj):
+                res.remove((where('cid') == user["cid"]) | (where ('rid') == user["rid"]))
+                conf.remove(where ('rid') == user["rid"])
+                asynct.remove(where('rid') == user["rid"])
+                dstate.remove(where('cid') == user["cid"])
+                return 'reservation time exceeded'
+            else:
+                res.remove((where('cid') == user["cid"]) | (where('rid') == user["rid"]))
+                conf.remove(where('rid') == user["rid"])
+                asynct.remove(where('rid') == user["rid"])
+                dstate.remove(where('cid') == user["cid"])
+                return 'channel closed'
         else:
-            res.remove((where('cid') == user["cid"]) | (where('rid') == user["rid"]))
-            conf.remove(where('rid') == user["rid"])
-            asynct.remove(where('rid') == user["rid"])
-            return 'channel closed'
+            return 'cid or rid does not exist'
     else:
-        return 'cid or rid does not exist'
+        return 'invalid user id or password'
 
 @app.route('/suspend/channel', methods=['POST'])
 @auth.login_required
 def schannel():
     user = json.loads(request.data)
-    if res.count((where('rid') == user["rid"]) | (where('cid') == user["cid"])):
-        now = datetime.now()
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
         info = res.search((where('rid') == user["rid"]) | (where('cid') == user["cid"]))
-        et = info[0]['end-time']
-        et_obj = datetime.strptime(et, '%Y-%m-%d %H:%M:%S')
-        now_obj = now.strftime('%Y-%m-%d %H:%M:%S')
-        if (now < et_obj):
-            res.update({"pause-time": now_obj, "status": "paused"}, (query.rid == user["rid"]) | (query.cid == user["cid"]))
-            return 'channel suspended'
+        if info:
+            now = datetime.now()
+            et_obj = info[0]['end-time']
+            now_obj = time.mktime(now.timetuple())
+            if (now < et_obj):
+                dstate.update({"pause-time": now_obj, "state": "paused"}, (query.gid == user["gid"]) & (query.cid == user["cid"]))
+                return 'channel suspended'
+            else:
+                st = res.search(where('cid') == user["cid"])
+                conf.remove(where('rid') == st["rid"])
+                asynct.remove(where('rid') == st["rid"])
+                res.remove(where('cid') == user["cid"])
+                dstate.remove(where('cid') == user["cid"])
+                return 'reservation time exceeded '
         else:
-            return 'reservation time exceeded '
+            return 'cid or rid does not exist'
     else:
-        return 'cid or rid does not exist'
-
+        return 'invalid user id or password'
 
 @app.route('/resume/channel', methods=['POST'])
 @auth.login_required
 def rchannel():
     user = json.loads(request.data)
-    if res.count((where('rid') == user["rid"]) | (where('cid') == user["cid"])):
-        now = datetime.now()
+    uid = request.headers['id']
+    pwd = request.headers['password']
+    if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
         info = res.search((where('rid') == user["rid"]) | (where('cid') == user["cid"]))
-        et = info[0]['end-time']
-        et_obj = datetime.strptime(et, '%Y-%m-%d %H:%M:%S')
-        if (now > et_obj):
-            res.remove((where('cid') == user["cid"]) | (where('rid') == user["rid"]))
-            conf.remove(where('rid') == user["rid"])
-            asynct.remove(where('rid') == user["rid"])
-            return 'reservation time exceeded'
+        if info:
+            n = datetime.now()
+            et_obj= info[0]['end-time']
+            now = time.mktime(n.timetuple())
+            if (now > et_obj):
+                st = res.search(where('cid') == user["cid"])
+                conf.remove(where('rid') == st["rid"])
+                asynct.remove(where('rid') == st["rid"])
+                res.remove(where('cid') == user["cid"])
+                dstate.remove(where('cid') == user["cid"])
+                return 'reservation time exceeded '
+            else:
+                dstate.update({"resume-time": now, "state": "active"}, (query.gid == user["gid"]) & (query.cid == user["cid"]))
+                return 'channel resumed'
         else:
-            res.update({"pause-time": "", "status": "resume"}, (query.rid == user["rid"]) | (query.cid == user["cid"]))
-            return 'channel resumed'
-
+            return 'cid or rid does not exist'
     else:
-        return 'cid or rid does not exist'
+        return 'invalid user id or password'
+
+# A function controlled by administrator to set priority of tasks based on user id
+def priority(uid):
+    return '%s'%p
 
 if __name__ == '__main__':
     app.run(debug = True)
