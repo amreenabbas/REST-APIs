@@ -30,7 +30,7 @@ def add_user():
     user_id = body["id"]
     if users.search(query.id == user_id):
         return 'Id already exists, status=409'
-    user_password = "password"
+    user_password = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(3)])
     salt = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(5)])
     h = user_id + salt + user_password
     users.insert({"id": user_id, "password": generate_password_hash(h),"salt" : salt})
