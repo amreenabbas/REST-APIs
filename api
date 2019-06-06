@@ -33,7 +33,7 @@ def add_user():
     user_password = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(3)])
     salt = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(5)])
     h = user_id + salt + user_password
-    users.insert({"id": user_id, "password": generate_password_hash(h),"salt" : salt})
+    users.insert({"id": user_id, "password": generate_password_hash(h),"salt" : salt, "type" : "user"})
     return 'user added, password : %s ,status=201'% user_password
 
 
@@ -66,7 +66,7 @@ def crgroup():
         return 'group-id %s'%g
     else:
         return 'invalid user id or password'
-    
+
 
 @app.route('/groups/<gid>',methods = ['PUT','DELETE'])
 @auth.login_required
@@ -77,25 +77,25 @@ def upgroup(gid):
         if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
             if group.count((where('gid') == gid) & (where('uid') == uid)):
                 user = json.loads(request.data)
-                group.update({'resources': user["resources"]}, query.gid == gid)
+                group.update({'resources': user["resources"]}, (query.gid == gid) & (query.uid == uid))
                 return '200 OK'
             else:
                 return 'invalid user id or gid'
         else:
             return 'invalid user id or password'
-        
+
     elif request.method == 'DELETE':
         uid = request.headers['id']
         pwd = request.headers['password']
         if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
-            if group.count(where('gid') == gid):
-                group.remove(where('gid') == gid)
+            if group.count((where('gid') == gid) & (where('uid') == uid)):
+                group.remove((where('gid') == gid) & (where('uid') == uid))
                 return '200 OK'
             else:
                 return ' gid not found'
         else:
             return 'invalid user id or password'
-        
+
 
 @app.route('/reservations',methods=['POST'])
 @auth.login_required
@@ -108,12 +108,12 @@ def reserve():
     s = time.mktime(st_obj.timetuple())
     e = time.mktime(et_obj.timetuple())
     if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
-        if group.count(where('gid') == user["gid"]):
+        if group.count((where('gid') == user["gid"]) & (where('uid') == uid)):
             if res.search((where('gid') == user["gid"]) & (where('start-time') <= user["start-time"]) & (where('end-time') >= user["end-time"])):
                 return 'already reserved'
             else:
                 r = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
-                p = priority(uid)
+                p = priority()
                 res.insert({'gid': user["gid"], 'rid': r, 'start-time': s,  'end-time': e, 'priority': p,'uid' : uid})
                 return 'reservation-id %s' % r
         else:
@@ -140,7 +140,7 @@ def upreserve(rid):
                 return 'invalid user id or rid'
         else:
             return 'invalid user id or password'
-        
+
     elif request.method == 'DELETE':
         uid = request.headers['id']
         pwd = request.headers['password']
@@ -161,37 +161,61 @@ def configure():
         uid = request.headers['id']
         pwd = request.headers['password']
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-            if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
-                conf.insert({'configurations' : user["configurations"], 'gid' : user["gid"], 'rid' : user["rid"]})
-                return 'created configurations'
+            i = users.search(where('id') == uid)
+            if i['type'] == "user":
+                if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                    conf.insert({'configurations' : user["configurations"], 'gid' : user["gid"], 'rid' : user["rid"]})
+                    return 'created configurations'
+                else:
+                    return 'rid and gid not found or channel not active'
             else:
-                return 'rid and gid not found or channel not active'
+                if group.count((where('gid') == user["gid"]) & (where('uid') == uid)):
+                    conf.insert({'configurations': user["configurations"], 'gid': user["gid"]})
+                    return 'created configurations'
+                else:
+                    return 'invalid gid or user id'
         else:
             return 'invalid user id or password'
-        
+
     if request.method == 'PUT':
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-            if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
-                conf.update({'configurations' : user["configurations"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-                return '200 OK'
+            i = users.search(where('id') == uid)
+            if i['type'] == "user":
+                if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                    conf.update({'configurations' : user["configurations"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+                    return '200 OK'
+                else:
+                    return 'rid and gid not found or channel not active'
             else:
-                return 'rid and gid not found or channel not active'
+                if conf.count(where('gid') == user["gid"]):
+                    conf.update({'configurations': user["configurations"]}, query.gid == user["gid"])
+                    return '200 OK'
+                else:
+                    return 'invalid gid or configurations not created'
         else:
             return 'invalid user id or password'
-        
+
     elif request.method == 'DELETE':
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-            if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
-                conf.remove((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
-                return '200 OK'
+            i = users.search(where('id') == uid)
+            if i['type'] == "user":
+                if res.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                    conf.remove((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+                    return '200 OK'
+                else:
+                    return 'gid and rid not found or channel not active'
             else:
-                return 'gid and rid not found or channel not active'
+                if conf.count(where('gid') == user["gid"]):
+                    conf.remove(where('gid') == user["gid"])
+                    return '200 OK'
+                else:
+                    return 'configurations not created for given gid'
         else:
             return 'invalid user id or password'
 
@@ -203,24 +227,40 @@ def write():
         uid = request.headers['id']
         pwd = request.headers['password']
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-            if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
-                conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-                return 'data saved'
+            i = users.search(where('id') == uid)
+            if i['type'] == "user":
+                if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                    conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+                    return 'data saved'
+                else:
+                    return 'rid and gid not found or channel not active'
             else:
-                return 'rid and gid not found or channel not active'
+                if group.count((where('gid') == user["gid"]) & (where('uid') == uid)):
+                    conf.update({'content': user["content"]}, query.gid == user["gid"])
+                    return 'data saved'
+                else:
+                    return 'invalid gid'
         else:
             return 'invalid user id or password'
-        
+
     if request.method == 'PUT':
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-            if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
-                conf.update({'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-                return '200 OK'
+            i = users.search(where('id') == uid)
+            if i['type'] == "user":
+                if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                    conf.update({'content': user["content"]},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+                    return '200 OK'
+                else:
+                    return 'rid and gid not found or channel not active'
             else:
-                return 'rid and gid not found or channel not active'
+                if conf.search(where('gid') == user["gid"]):
+                    conf.update({'content': user["content"]},query.gid == user["gid"])
+                    return '200 OK'
+                else:
+                    return 'data not written to the given gid'
         else:
             return 'invalid user id or password'
 
@@ -229,11 +269,19 @@ def write():
         uid = request.headers['id']
         pwd = request.headers['password']
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-            if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
-                conf.update({"content" : ""},(query.rid == user["rid"]) & (query.gid == user["gid"]))
-                return '200 OK'
+            i = users.search(where('id') == uid)
+            if i['type'] == "user":
+                if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"]) & (where('cid') == user["cid"])):
+                    conf.update({"content" : ""},(query.rid == user["rid"]) & (query.gid == user["gid"]))
+                    return '200 OK'
+                else:
+                    return 'gid and rid not found or channel not active'
             else:
-                return 'gid and rid not found or channel not active'
+                if conf.search(where('gid') == user["gid"]):
+                    conf.remove(where('gid') == user["gid"])
+                    return '200 OK'
+                else:
+                    return 'no data written for given gid'
         else:
             return 'invalid user id or password'
 
@@ -244,17 +292,28 @@ def opstat():
     uid = request.headers['id']
     pwd = request.headers['password']
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            st = dstate.count (where('gid') == user["gid"])
-            if st :
-                return 'device status : active , rid : %s' % st[0]['rid']
+        i = users.search(where('id') == uid)
+        if i['type'] == "user":
+            if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+                st = dstate.count (where('gid') == user["gid"])
+                if st:
+                    return 'device status : active , rid : %s' % st[0]['rid']
+                else:
+                    return 'device status : inactive'
             else:
-                return 'device status : inactive'
+                return 'rid and gid not found'
         else:
-            return 'rid and gid not found'
+            if group.count((where('gid') == user["gid"]) & (where('uid') == uid)):
+                st = dstate.count(where('gid') == user["gid"])
+                if st:
+                    return 'device status : active , rid : %s' % st[0]['rid']
+                else:
+                    return 'device status : inactive'
+            else:
+                return 'invalid gid'
     else:
         return 'invalid user id or password'
-    
+
 @app.route('/device-status',methods = ['POST'])
 @auth.login_required
 def devstat():
@@ -262,14 +321,25 @@ def devstat():
     uid = request.headers['id']
     pwd = request.headers['password']
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-            if conf.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
-                st = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
-                return '%s' % st
+        i = users.search(where('id') == uid)
+        if i['type'] == "user":
+            if res.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+                if conf.count((where('rid') == user["rid"]) & (where('gid') == user["gid"])):
+                    st = conf.search((where('rid') == user["rid"]) & (where('gid') == user["gid"]))
+                    return '%s' % st
+                else:
+                    return 'no configurations created'
             else:
-                return 'no configurations created'
+                return 'rid and gid not found'
         else:
-            return 'rid and gid not found'
+            if group.count((where('gid') == user["gid"]) & (where('uid') == uid)):
+                st = conf.search(where('gid') == user["gid"])
+                if st:
+                    return '%s' % st
+                else:
+                    return 'no configurations created'
+            else:
+                return 'invalid gid'
     else:
         return 'invalid user id or password'
 
@@ -302,7 +372,7 @@ def asyncwrite():
             return 'rid and gid not found'
     else:
         return 'invalid user id or password'
-    
+
 
 @app.route('/open/channel',methods = ['POST'])
 @auth.login_required
@@ -347,7 +417,7 @@ def opchannel():
             return 'gid and rid not found'
     else:
         return 'invalid user id or password'
-    
+
 @app.route('/close/channel',methods = ['POST'])
 @auth.login_required
 def clchannel():
@@ -431,9 +501,8 @@ def rchannel():
     else:
         return 'invalid user id or password'
 
-# A function controlled by administrator to set priority of tasks based on user id
-def priority(uid):
-    return '%s'%p
+def priority():
+    return 'low'
 
 if __name__ == '__main__':
     app.run(debug = True)
