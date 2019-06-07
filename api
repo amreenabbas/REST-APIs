@@ -191,19 +191,19 @@ def configure():
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
             i = users.search(where('id') == uid)
             if i[0]['type'] == "user":
-                if res.search((where('rid') == user["rid"]) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
+                if res.search((where('rid') == user.get("rid")) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
                     conf.insert({'configurations' : user["configurations"], 'gid' : gid, 'rid' : user["rid"]})
                     return 'created configurations'
-                elif res.search((where('rid') == user["rid"]) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
+                elif res.search((where('rid') == user.get("rid")) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
                     conf.insert({'configurations' : user["configurations"], 'did' : did, 'rid' : user["rid"]})
                     return 'created configurations'
                 else:
                     return 'rid and gid/did not found or channel not active'
             else:
-                if group.count((where('gid') == gid) & (where('uid') == uid) & (where('uid') == uid)):
+                if group.count((where('gid') == gid) & (where('uid') == uid)):
                     conf.insert({'configurations': user["configurations"], 'gid': gid})
                     return 'created configurations'
-                elif device.count((where('did') == did) & (where('uid') == uid) & (where('uid') == uid)):
+                elif device.count((where('did') == did) & (where('uid') == uid)):
                     conf.insert({'configurations': user["configurations"], 'did': did})
                     return 'created configurations'
                 else:
@@ -230,10 +230,10 @@ def configure():
                 else:
                     return 'rid and gid/did not found or channel not active'
             else:
-                if conf.count((where('gid') == gid)& (where('uid') == uid)):
+                if (group.count((where('gid') == gid) & (where('uid') == uid))) & (conf.count(where('gid') == gid)):
                     conf.update({'configurations': user["configurations"]}, query.gid == gid)
                     return '200 OK'
-                elif conf.count((where('did') == did)& (where('uid') == uid)):
+                elif (device.count((where('did') == did) & (where('uid') == uid))) & (conf.count(where('did') == did)):
                     conf.update({'configurations': user["configurations"]}, query.did == did)
                     return '200 OK'
                 else:
@@ -251,19 +251,19 @@ def configure():
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
             i = users.search(where('id') == uid)
             if i[0]['type'] == "user":
-                if res.search((where('rid') == user["rid"]) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.remove((where('rid') == user["rid"]) & (where('gid') == gid))
+                if res.search((where('rid') == user.get("rid")) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
+                    conf.remove((where('rid') == user.get("rid")) & (where('gid') == gid))
                     return '200 OK'
-                elif res.search((where('rid') == user["rid"]) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.remove((where('rid') == user["rid"]) & (where('did') == did))
+                elif res.search((where('rid') == user.get("rid")) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
+                    conf.remove((where('rid') == user.egt("rid")) & (where('did') == did))
                     return '200 OK'
                 else:
                     return 'rid and gid/did not found or channel not active'
             else:
-                if conf.count((where('gid') == gid) & (where('uid') == uid)):
+                if (group.count((where('gid') == gid) & (where('uid') == uid))) & (conf.count(where('gid') == gid)):
                     conf.remove(where('gid') == gid)
                     return '200 OK'
-                elif conf.count((where('did') == did) & (where('uid') == uid)):
+                elif (device.count((where('did') == did) & (where('uid') == uid))) & (conf.count(where('did') == did)):
                     conf.remove(where('did') == did)
                     return '200 OK'
                 else:
