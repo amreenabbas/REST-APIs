@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-from flask import Flask, request
+from flask import Flask, request, Response,jsonify,make_response
 from tinydb import TinyDB, Query, where
 from werkzeug.security import generate_password_hash, check_password_hash
 import json
@@ -8,8 +8,12 @@ from flask_httpauth import HTTPBasicAuth
 from datetime import datetime
 import random
 import string
+
+
+from apscheduler.schedulers.background import BackgroundScheduler
+
 import time
-import hashlib
+
 
 db = TinyDB('db.json')
 query = Query()
@@ -26,15 +30,19 @@ auth = HTTPBasicAuth()
 
 @app.route("/signup", methods=["POST"])
 def add_user():
+  try:
     body = json.loads(request.data)
     user_id = body["id"]
     if users.search(query.id == user_id):
-        return 'Id already exists, status=409'
-    user_password = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(3)])
+        return Response('Id already exists', status=409)
+    user_password = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
     salt = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(5)])
     h = user_id + salt + user_password
     users.insert({"id": user_id, "salt" : salt ,"password": generate_password_hash(h), "type" : "user"})
-    return 'user added, password : %s ,status=201'% user_password
+    d = {"id" : user_id,"password" : user_password}
+    return make_response(jsonify(d), 201)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -43,11 +51,12 @@ def login():
     pwd = user_["password"]
     if users.search(where('id') == uid):
         if verify_password(uid,pwd):
-            return 'status=200'
+            return Response('successful',status=200)
         else:
-            return 'invalid password, status=403'
+            return Response('invalid password', status=401)
     else:
         return 'invalid id'
+    
 def verify_password(uid,pwd):
     info = users.search(where('id') == uid)
     if info:
@@ -63,49 +72,71 @@ def verify_password(uid,pwd):
 @app.route('/groups',methods = ['POST'])
 
 def crgroup():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
+    r = user.get('resources')
+    gn = user.get('gid')
     if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
-        g = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
-        group.insert({'gid' : g, 'resources' : user["resources"], 'uid' : uid})
-        return 'group-id %s'%g
+        if gn:
+            if group.count(where('gid') == gn):
+                group.insert({'gid': gn, 'uid': uid})
+                return Response('group selected', status=200)
+            else:
+                return Response('group not found', status=404)
+        else:
+            if r:
+                g = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
+                group.insert({'gid' : g, 'resources' : user["resources"], 'uid' : uid})
+                d = {"gid" : g}
+                return make_response(jsonify(d), 201)
+            else:
+                return Response('resources missing',status=400)
     else:
-        return 'invalid user id or password'
+        return Response('invalid user id or password',status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
+@app.route('/groups/<id>/<gid>',methods = ['PUT','DELETE'])
 
-@app.route('/groups/<gid>',methods = ['PUT','DELETE'])
-
-def upgroup(gid):
+def upgroup(id,gid):
     if request.method == 'PUT':
+      try:
         uid = request.headers['id']
         pwd = request.headers['password']
-        if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
-            if group.count((where('gid') == gid) & (where('uid') == uid)):
-                user = json.loads(request.data)
-                group.update({'resources': user["resources"]}, (query.gid == gid) & (query.uid == uid))
-                return '200 OK'
+        user = json.loads(request.data)
+        r = user.get('resources')
+        if (users.count(where('id') == id)) & (verify_password(uid,pwd)) & (uid == id):
+            if group.count((where('gid') == gid) & (where('uid') == id)):
+                if r:
+                    group.update({'resources': r}, (query.gid == gid) & (query.uid == id))
+                    return Response('group updated',status=200)
+                else:
+                    return Response('resources missing', status=400)
             else:
                 return 'invalid user id or gid'
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
+      except json.decoder.JSONDecodeError:
+          return Response('request body empty', status=400)
 
     elif request.method == 'DELETE':
         uid = request.headers['id']
         pwd = request.headers['password']
-        if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
+        if (users.count(where('id') == uid)) & (verify_password(uid,pwd)) & (uid == id):
             if group.count((where('gid') == gid) & (where('uid') == uid)):
                 group.remove((where('gid') == gid) & (where('uid') == uid))
-                return '200 OK'
+                return Response('group deleted',status=200)
             else:
-                return ' gid not found'
+                return Response('gid not found',status=404)
         else:
-            return 'invalid user id or password'
-
+            return Response('invalid user id or password',status=401)
 
 @app.route('/reservations',methods=['POST'])
 
 def reserve():
+  try:
     user = json.loads(request.data)
     did = user.get("did")
     gid = user.get("gid")
@@ -118,29 +149,34 @@ def reserve():
     if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
         if group.count((where('gid') == gid) & (where('uid') == uid)):
             if res.search((where('gid') == gid) & (where('start-time') <= s) & (where('end-time') >= e)):
-                return 'already reserved'
+                return Response('already reserved',status=409)
             else:
                 r = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
                 p = priority()
                 res.insert({'gid': gid, 'rid': r, 'start-time': s,  'end-time': e, 'priority': p,'uid' : uid})
-                return 'reservation-id %s' % r
+                d = {"rid" : r}
+                return make_response(jsonify(d), 201)
         elif device.count((where('did') == did) & (where('uid') == uid)):
             if res.search((where('did') == did) & (where('start-time') <= user["start-time"]) & (where('end-time') >= user["end-time"])):
-                return 'already reserved'
+                return Response('already reserved',status=409)
             else:
                 r = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
                 p = priority()
                 res.insert({'did': did, 'rid': r, 'start-time': s,  'end-time': e, 'priority': p,'uid' : uid})
-                return 'reservation-id %s' % r
+                d = {"rid": r}
+                return make_response(jsonify(d), 201)
         else:
-            return 'invalid gid/did or user id'
+            return Response('invalid gid/did or user id',status=404)
     else:
-        return 'invalid user id or password'
+        return Response('invalid user id or password',status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
 @app.route('/reservations/<rid>', methods=['PUT','DELETE'])
 
 def upreserve(rid):
     if request.method == 'PUT':
+      try:
         uid = request.headers['id']
         pwd = request.headers['password']
         if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
@@ -160,11 +196,13 @@ def upreserve(rid):
                     et_obj = datetime.strptime(user.get("end-time"), '%Y-%m-%d %H:%M:%S')
                     e = time.mktime(et_obj.timetuple())
                     res.update({'end-time': e}, query.rid == rid)
-                return '200 OK'
+                return Response('reservation updated',status=200)
             else:
-                return 'invalid user id or rid'
+                return Response('invalid user id or rid',status=404)
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
+      except json.decoder.JSONDecodeError:
+          return Response('request body empty', status=400)
 
     elif request.method == 'DELETE':
         uid = request.headers['id']
@@ -172,76 +210,95 @@ def upreserve(rid):
         if (users.count(where('id') == uid)) & (verify_password(uid,pwd)):
             if res.count((where('rid') == rid) & (where('uid') == uid)):
                 res.remove((query.rid == rid) & (query.uid == uid))
-                return '200 OK'
+                return Response('reservation deleted',status=200)
             else:
-                return 'invalid user id or rid'
+                return Response('invalid user id or rid',status=404)
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
 
 @app.route('/sync-configurations', methods=['POST','PUT','DELETE'])
 
 def configure():
     if request.method == 'POST':
+      try:
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
         gid = user.get('gid')
         did = user.get('did')
         cid = user.get('cid')
+        co = user.get('configurations')
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-            i = users.search(where('id') == uid)
-            if i[0]['type'] == "user":
-                if res.search((where('rid') == user.get("rid")) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.insert({'configurations' : user["configurations"], 'gid' : gid, 'rid' : user["rid"]})
-                    return 'created configurations'
-                elif res.search((where('rid') == user.get("rid")) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.insert({'configurations' : user["configurations"], 'did' : did, 'rid' : user["rid"]})
-                    return 'created configurations'
+            if co:
+                i = users.search(where('id') == uid)
+                if i[0]['type'] == "user":
+                    if res.search((where('cid') == cid) & (where('uid') == uid)):
+                        if gid:
+                            conf.insert({'configurations' : co, 'id' : gid, 'cid' : cid})
+                        elif did:
+                            conf.insert({'configurations' : co, 'id' : did, 'cid' : cid})
+                        else:
+                            conf.insert({'configurations': co, 'cid': cid})
+                        return Response('configurations created', status=201)
+                    else:
+                        return Response('cid not found',status=404)
                 else:
-                    return 'rid and gid/did not found or channel not active'
+                    if group.count((where('gid') == gid) & (where('uid') == uid)):
+                        conf.insert({'configurations': co, 'id': gid})
+                        return Response('configurations created',status=201)
+                    elif device.count((where('did') == did) & (where('uid') == uid)):
+                        conf.insert({'configurations': co, 'id': did})
+                        return Response('configurations created',status=201)
+                    else:
+                        return Response('invalid did or gid',status=404)
             else:
-                if group.count((where('gid') == gid) & (where('uid') == uid)):
-                    conf.insert({'configurations': user["configurations"], 'gid': gid})
-                    return 'created configurations'
-                elif device.count((where('did') == did) & (where('uid') == uid)):
-                    conf.insert({'configurations': user["configurations"], 'did': did})
-                    return 'created configurations'
-                else:
-                    return 'invalid gid/did or user id'
+                return Response('configurations missing',status=400)
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
+      except json.decoder.JSONDecodeError:
+          return Response('request body empty', status=400)
 
     if request.method == 'PUT':
+      try:
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
         cid = user.get('cid')
         gid = user.get('gid')
-        did = user.get('gid')
+        did = user.get('did')
+        co = user.get('configurations')
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-            i = users.search(where('id') == uid)
-            if i[0]['type'] == "user":
-                if res.search((where('rid') == user["rid"]) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.update({'configurations' : user["configurations"]},(query.rid == user["rid"]) & (query.gid == gid))
-                    return '200 OK'
-                elif res.search((where('rid') == user["rid"]) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.update({'configurations' : user["configurations"]},(query.rid == user["rid"]) & (query.did == did))
-                    return '200 OK'
+            if co:
+                i = users.search(where('id') == uid)
+                if i[0]['type'] == "user":
+                    if res.search((where('cid') == cid) & (where('uid') == uid)):
+                        if gid:
+                            conf.update({'configurations' : co},(query.cid == cid) & (query.gid == gid))
+                        elif did:
+                            conf.update({'configurations' : co},(query.cid == cid) & (query.did == did))
+                        else:
+                            conf.update({'configurations': co}, query.cid == cid)
+                        return Response('configurations updated',status=200)
+                    else:
+                        return Response('cid not found',status=404)
                 else:
-                    return 'rid and gid/did not found or channel not active'
+                    if (group.count((where('id') == gid) & (where('uid') == uid))) & (conf.count(where('id') == gid)):
+                        conf.update({'configurations': co}, query.id == gid)
+                        return Response('configurations updated',status=200)
+                    elif (device.count((where('did') == did) & (where('uid') == uid))) & (conf.count(where('id') == did)):
+                        conf.update({'configurations': co}, query.id == did)
+                        return Response('configurations updated',status=200)
+                    else:
+                        return Response('invalid did or gid',status=404)
             else:
-                if (group.count((where('gid') == gid) & (where('uid') == uid))) & (conf.count(where('gid') == gid)):
-                    conf.update({'configurations': user["configurations"]}, query.gid == gid)
-                    return '200 OK'
-                elif (device.count((where('did') == did) & (where('uid') == uid))) & (conf.count(where('did') == did)):
-                    conf.update({'configurations': user["configurations"]}, query.did == did)
-                    return '200 OK'
-                else:
-                    return 'invalid gid/did or configurations not created'
+                return Response('configurations missing',status=400)
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
+      except json.decoder.JSONDecodeError:
+          return Response('request body empty', status=400)
 
     elif request.method == 'DELETE':
+      try:
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
@@ -251,90 +308,110 @@ def configure():
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
             i = users.search(where('id') == uid)
             if i[0]['type'] == "user":
-                if res.search((where('rid') == user.get("rid")) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.remove((where('rid') == user.get("rid")) & (where('gid') == gid))
-                    return '200 OK'
-                elif res.search((where('rid') == user.get("rid")) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.remove((where('rid') == user.egt("rid")) & (where('did') == did))
-                    return '200 OK'
+                if res.search((where('cid') == cid) & (where('uid') == uid)):
+                    if gid:
+                        conf.remove((where('cid') == cid) & (where('id') == gid))
+                    elif did:
+                        conf.remove((where('cid') == cid) & (where('id') == did))
+                    else:
+                        conf.remove(where('cid') == cid)
+                    return Response('configurations deleted', status=200)
                 else:
-                    return 'rid and gid/did not found or channel not active'
+                    return Response('cid not found',status=404)
             else:
-                if (group.count((where('gid') == gid) & (where('uid') == uid))) & (conf.count(where('gid') == gid)):
+                if (group.count((where('gid') == gid) & (where('uid') == uid))) & (conf.count(where('id') == gid)):
                     conf.remove(where('gid') == gid)
-                    return '200 OK'
-                elif (device.count((where('did') == did) & (where('uid') == uid))) & (conf.count(where('did') == did)):
+                    return Response('configurations deleted',status=200)
+                elif (device.count((where('did') == did) & (where('uid') == uid))) & (conf.count(where('id') == did)):
                     conf.remove(where('did') == did)
-                    return '200 OK'
+                    return Response('configurations deleted',status=200)
                 else:
-                    return 'configurations not created for given gid/did'
+                    return Response('configurations not created for given gid/did',status=404)
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
+      except json.decoder.JSONDecodeError:
+          return Response('request body empty', status=400)
 
 @app.route('/sync-write', methods=['POST','PUT','DELETE'])
 
 def write():
     if request.method == 'POST':
+      try:
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
         cid = user.get('cid')
         did = user.get('did')
         gid = user.get('gid')
+        co = user.get('content')
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
             i = users.search(where('id') == uid)
-            if i[0]['type'] == "user":
-                if res.count((where('rid') == user["rid"]) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.update({ 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == gid))
-                    return 'data saved'
-                elif res.count((where('rid') == user["rid"]) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.update({'content': user["content"]},(query.rid == user["rid"]) & (query.did == did))
-                    return 'data saved'
+            if co:
+                if i[0]['type'] == "user":
+                    if res.count((where('cid') == cid) & (where('uid') == uid)):
+                        if gid:
+                            conf.update({'content': co},(query.cid == cid) & (query.gid == gid))
+                        elif did:
+                            conf.update({'content': co},(query.cid == cid) & (query.did == did))
+                        else:
+                            conf.update({'content': co}, query.cid == cid)
+                        return Response('content missing', status=400)
+                    else:
+                        return Response('cid not found',status=404)
                 else:
-                    return 'rid and gid/did not found or channel not active'
+                    if group.count((where('gid') == gid) & (where('uid') == uid)):
+                        conf.update({'content': co}, query.id == gid)
+                        return Response('data saved',status=200)
+                    elif device.count((where('did') == did) & (where('uid') == uid)):
+                        conf.update({'content': co}, query.id == did)
+                        return Response('data saved',status=200)
+                    else:
+                        return Response('invalid gid/did',status=404)
             else:
-                if group.count((where('gid') == gid) & (where('uid') == uid) & (where('uid') == uid) & (where('uid') == uid)):
-                    conf.update({'content': user["content"]}, query.gid == gid)
-                    return 'data saved'
-                elif group.count((where('did') == did) & (where('uid') == uid) & (where('uid') == uid) & (where('uid') == uid)):
-                    conf.update({'content': user["content"]}, query.did == did)
-                    return 'data saved'
-                else:
-                    return 'invalid gid/did'
+                return Response('content missing', status=400)
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
+      except json.decoder.JSONDecodeError:
+          return Response('request body empty', status=400)
 
     if request.method == 'PUT':
+      try:
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
         cid = user.get('cid')
         did = user.get('did')
         gid = user.get('gid')
+        co = user.get('content')
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
             i = users.search(where('id') == uid)
             if i[0]['type'] == "user":
-                if res.count((where('rid') == user["rid"]) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.update({'content': user["content"]},(query.rid == user["rid"]) & (query.gid == gid))
-                    return '200 OK'
-                elif res.count((where('rid') == user["rid"]) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.update({'content': user["content"]},(query.rid == user["rid"]) & (query.did == did))
-                    return '200 OK'
+                if res.count((where('cid') == cid) & (where('uid') == uid)):
+                    if gid:
+                        conf.update({'content': co},(query.cid == cid) & (query.id == gid))
+                    elif did:
+                        conf.update({'content': co},(query.cid == cid) & (query.id == did))
+                    else:
+                        conf.update({'content': co},query.cid == cid)
+                    return Response('data updated', status=200)
                 else:
-                    return 'rid and gid not found or channel not active'
+                    return Response('cid not found',status=404)
             else:
                 if conf.search((where('gid') == gid) & (where('uid') == uid)):
-                    conf.update({'content': user["content"]},query.gid == gid)
-                    return '200 OK'
+                    conf.update({'content': co},query.id == gid)
+                    return Response('data updated', status=200)
                 elif conf.search((where('did') == did)& (where('uid') == uid)):
-                    conf.update({'content': user["content"]},query.did == did)
-                    return '200 OK'
+                    conf.update({'content': co},query.id == did)
+                    return Response('data updated', status=200)
                 else:
-                    return 'data not written to the given gid/did'
+                    return Response('gid or did invalid or missing', status=400)
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
+      except json.decoder.JSONDecodeError:
+          return Response('request body empty', status=400)
 
     elif request.method == 'DELETE':
+      try:
         user = json.loads(request.data)
         uid = request.headers['id']
         pwd = request.headers['password']
@@ -344,316 +421,345 @@ def write():
         if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
             i = users.search(where('id') == uid)
             if i[0]['type'] == "user":
-                if res.count((where('rid') == user["rid"]) & (where('gid') == gid) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.update({"content" : ""},(query.rid == user["rid"]) & (query.gid == gid))
-                    return '200 OK'
-                elif res.count((where('rid') == user["rid"]) & (where('did') == did) & (where('cid') == cid) & (where('uid') == uid)):
-                    conf.update({"content" : ""},(query.rid == user["rid"]) & (query.did == did))
-                    return '200 OK'
+                if res.count((where('cid') == cid) & (where('uid') == uid)):
+                    if gid:
+                        conf.update({"content" : ""},(query.cid == cid) & (query.gid == gid))
+                    elif did:
+                        conf.update({"content" : ""},(query.cid == cid) & (query.did == did))
+                    else:
+                        conf.update({"content": ""}, query.cid == cid)
+                    return Response('data deleted', status=200)
                 else:
-                    return 'gid and rid not found or channel not active'
+                    return Response('cid not found',status=404)
             else:
-                if conf.search((where('gid') == gid)& (where('uid') == uid)):
-                    conf.remove(where('gid') == gid)
-                    return '200 OK'
-                elif conf.search((where('did') == did)& (where('uid') == uid)):
-                    conf.remove(where('did') == did)
-                    return '200 OK'
+                if conf.search((where('id') == gid) & (where('uid') == uid)):
+                    conf.remove(where('id') == gid)
+                    return Response('data deleted',status=200)
+                elif conf.search((where('id') == did)& (where('uid') == uid)):
+                    conf.remove(where('id') == did)
+                    return Response('data deleted',status=200)
                 else:
-                    return 'no data written for given gid/did'
+                    return Response('invalid gid/did',status=404)
         else:
-            return 'invalid user id or password'
+            return Response('invalid user id or password',status=401)
+      except json.decoder.JSONDecodeError:
+          return Response('request body empty', status=400)
 
 @app.route('/operational-status', methods=['POST'])
 
 def opstat():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
     did = user.get('did')
     gid = user.get('gid')
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        i = users.search(where('id') == uid)
-        if i[0]['type'] == "user":
-            if group.count(where('gid') == gid):
-                st = dstate.search(where('id') == gid)
-                if st:
-                    return 'device status : active , rid : %s' % st[0]['rid']
-                else:
-                    return 'device status : inactive'
-            elif device.count(where('did') == did):
-                st = dstate.search(where('id') == did)
-                if st:
-                    return 'device status : active , rid : %s' % st[0]['rid']
-                else:
-                    return 'device status : inactive'
+        if (device.count(where('did') == did)) | (group.count(where('gid') == gid)):
+            st = dstate.search((where('id') == gid) | (where('id') == did))
+            if st:
+                d = {"status": "active", "rid": st[0]['rid']}
+                return make_response(jsonify(d), 200)
             else:
-                return 'rid and did not found'
+                d = {"status" : "inactive"}
+                return make_response(jsonify(d), 200)
         else:
-            if group.count(where('gid') == gid):
-                st = dstate.search(where('id') == gid)
-                if st:
-                    return 'device status : active , rid : %s' % st[0]['rid']
-                else:
-                    return 'device status : inactive'
-            elif device.count(where('did') == user["did"]):
-                st = dstate.search(where('id') == did)
-                if st:
-                    return 'device status : active , rid : %s' % st[0]['rid']
-                else:
-                    return 'device status : inactive'
-            else:
-                return 'invalid did/gid'
+            return Response('invalid did or gid',status=404)
     else:
-        return 'invalid user id or password'
+        return Response('invalid user id or password', status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
 @app.route('/device-status',methods = ['POST'])
 
 def devstat():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
     did = user.get('did')
     gid = user.get('gid')
+    cid = user.get('cid')
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        i = users.search(where('id') == uid)
-        if i[0]['type'] == "user":
-            if group.count (where('gid') == gid):
-                if conf.count((where('rid') == user.get("rid")) & (where('gid') == gid)):
-                    st = conf.search((where('rid') == user.get("rid")) & (where('gid') == gid))
-                    return '%s' % st[0]['configurations']
+        u = users.search(where('id') == uid)
+        if u[0]['type'] == "user":
+            if (cid!= None) & (res.count(where('cid') == cid)):
+                if (group.count(where('gid') == gid)) | (device.count(where('did') == did)):
+                    st = conf.search((where('cid') == cid) & ((where('id') == gid) | (where('id') == did)))
+                    if st:
+                        d = {"configurations":  st[0]['configurations']}
+                        return make_response(jsonify(d), 200)
+                    else:
+                        return Response('no configurations created',status=204)
                 else:
-                    return 'no configurations created'
-            elif device.count(where('did') == did):
-                if conf.count((where('rid') == user.get("rid")) & (where('did') == did)):
-                    st = conf.search((where('rid') == user.get("rid")) & (where('did') == did))
-                    return '%s' % st[0]['configurations']
-                else:
-                    return 'no configurations created'
+                    return Response('gid/did invalid or missing', status=404)
             else:
-                return 'rid and gid/did not found'
+                return Response('cid missing or invalid',status=400)
         else:
-            if group.count(where('gid') == gid):
-                st = conf.search(where('gid') == gid)
+            if (group.count(where('gid') == gid)) | (device.count(where('did') == did)):
+                st = conf.search((where('id') == gid) | (where('id') == did))
                 if st:
-                    return '%s' % st[0]['configurations']
+                    d = {"configurations": st[0]['configurations']}
+                    return make_response(jsonify(d), 200)
                 else:
-                    return 'no configurations created'
-            elif group.count(where('did') == did):
-                st = conf.search(where('did') == did)
-                if st:
-                    return '%s' % st[0]['configurations']
-                else:
-                    return 'no configurations created'
+                    return Response('no configurations created', status=204)
             else:
-                return 'invalid gid/did'
+                return Response('gid/did invalid or missing', status=404)
     else:
-        return 'invalid user id or password'
+        return Response('invalid user id or password',status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
 @app.route('/async-configurations', methods=['POST'])
 
 def asyncconfigure():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
-    did = user.get('did')
     gid = user.get('gid')
+    rid = user.get('rid')
+    did = user.get('did')
+    confi = user.get('configurations')
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        if res.count((where('rid') == user["rid"]) & (where('gid') == gid) & (where('uid') == uid)):
-            asynct.insert({'rid': user["rid"], 'gid': user["gid"], 'configurations': user["configurations"]})
-            return '200 OK'
-        elif res.count((where('rid') == user["rid"]) & (where('did') == did) & (where('uid') == uid)):
-            asynct.insert({'rid': user["rid"], 'did': did, 'configurations': user["configurations"]})
-            return '200 OK'
+        if (res.count((where('rid') == rid) & (where('uid') == uid))) & (rid!= None):
+            if confi:
+                if (gid != None) | (did != None):
+                    if res.count((where('gid') == gid) & (where('rid') == rid)):
+                        asynct.insert({'rid': rid, 'configurations': confi,'id' : gid})
+                        return Response('configurations stored', status=202)
+                    elif res.count((where('did') == did) & (where('rid') == rid)):
+                        asynct.insert({'rid': rid, 'configurations': confi, 'id': did})
+                        return Response('configurations stored', status=202)
+                    else:
+                        return Response('no reservation found for given did or gid',status=404)
+                else:
+                    return Response('did or did missing',status=400)
+            else:
+                return Response('configurations missing', status=400)
         else:
-            return 'rid and gid/did not found'
+            return Response('rid missing or invalid', status=400)
     else:
-        return 'invalid user id or password'
+        return Response('invalid user id or password',status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
 @app.route('/async-write',methods = ['POST'])
 
 def asyncwrite():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
-    did = user.get('did')
     gid = user.get('gid')
+    rid = user.get('rid')
+    did = user.get('did')
+    con = user.get('content')
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        if res.count((where('rid') == user["rid"]) & (where('gid') == gid) & (where('uid') == uid)):
-            asynct.update({'rid': user["rid"], 'gid': gid, 'content': user["content"]},(query.rid == user["rid"]) & (query.gid == gid))
-            return '200 OK'
-        elif res.count((where('rid') == user["rid"]) & (where('did') == did) & (where('uid') == uid)):
-            asynct.update({'rid': user["rid"], 'did': did, 'content': user["content"]},(query.rid == user["rid"]) & (query.did == did))
-            return '200 OK'
+        if (res.count((where('rid') == rid) & (where('uid') == uid))) & (rid != None):
+            if con:
+                if (gid != None) | (did != None):
+                    if res.count((where('gid') == gid) & (where('rid') == rid)):
+                        asynct.update({'rid': rid, 'id': gid, 'content': con}, (query.rid == rid) & (query.id == gid))
+                        return Response('data stored',status=202)
+                    elif res.count((where('did') == did) & (where('rid') == rid)):
+                        asynct.update({'rid': rid, 'id': did, 'content': con}, (query.rid == rid) & (query.id == did))
+                        return Response('data stored', status=202)
+                    else:
+                        return Response('no reservation found for given did or gid',status=404)
+                else:
+                    return Response('gid or did invalid or missing', status=404)
+            else:
+                return Response('content missing', status=400)
         else:
-            return 'rid and gid/did not found'
+            return Response('rid missing or invalid',status=404)
     else:
-        return 'invalid user id or password'
-
+        return Response('invalid user id or password',status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
 @app.route('/open/channel',methods = ['POST'])
 
 def opchannel():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
-    did = user.get('did')
     gid = user.get('gid')
+    rid = user.get('rid')
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        if res.count((where('rid') == user["rid"]) & (where('gid') == gid) & (where('uid') == uid)):
+        if res.count((where('rid') == rid) & (where('uid') == uid)):
             n = datetime.now()
-            info1 = res.search((where('rid') == user["rid"]) & (where('gid') == gid))
+            info1 = res.search(where('rid') == rid)
             now = time.mktime(n.timetuple())
             st = info1[0]['start-time']
             et = info1[0]['end-time']
             if (now >= st) & (et >= now):
-                r = dstate.search(where('id') == gid)
+                u = res.search(where('rid') == rid)
+                gid1 = u[0]['gid']
+                r = dstate.search(where('id') == gid1)
                 if r:
                     t = res.search(where('rid') == r[0]["rid"])
                     if info1[0]["priority"] > t[0]["priority"]:
                         cid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
-                        res.update({'cid' : cid}, (query.rid == user["rid"]) & (query.gid == gid))
-                        info = conf.search((where('rid') == user["rid"]) & (where('gid') == gid))
-                        obj = asynct.search((query.rid == user["rid"]) & (query.gid == gid))
-                        if (not info) & obj:
-                            conf.insert({'configurations': obj[0]['configurations'],'content' : obj[0]['content'], 'rid' : user["rid"], 'gid' : gid})
-                        dstate.update({'state' : "paused"},(query.id == r[0]["gid"]) & (query.rid == r[0]["rid"]))
-                        dstate.insert({'cid' : cid, 'rid' : user["rid"], 'state' : 'active','id' : gid})
-                        return 'channel-id is %s'%cid
+                        res.update({'cid' : cid}, query.rid == rid)
+                        d = {"cid": cid}
+                        return make_response(jsonify(d), 200)
                     else:
-                        return 'high priority task executing'
+                        return Response('high priority task executing',status=409)
                 else:
                     cid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
-                    res.update({"cid": cid}, (query.rid == user["rid"]) & (query.gid == gid))
-                    info = conf.search((where('rid') == user["rid"]) & (where('gid') == gid))
-                    obj1 = asynct.count((query.rid == user["rid"]) & (query.gid == gid))
-                    if (not info) & obj1:
-                        obj = asynct.search((query.rid == user["rid"]) & (query.gid == gid))
-                        conf.insert({'configurations': obj[0]['configurations'], 'content': obj[0]['content'], 'rid': user["rid"], 'gid': gid})
-                    dstate.insert({'cid': cid, 'rid': user["rid"], 'state': 'active', 'id': gid})
-                    return 'channel-id is %s' % cid
+                    res.update({"cid": cid}, query.rid == rid)
+                    d = {"cid": cid}
+                    return make_response(jsonify(d), 200)
             else:
-                return 'time outside reservation time'
-        elif res.count((where('rid') == user["rid"]) & (where('did') == did) & (where('uid') == uid)):
-            n = datetime.now()
-            info1 = res.search((where('rid') == user["rid"]) & (where('did') == did))
-            now = time.mktime(n.timetuple())
-            et = info1[0]['end-time']
-            st = info1[0]['start-time']
-            if (now >= st) & (et >= now):
-                r = dstate.search(where('id') == did)
-                if r:
-                    t = res.search(where('rid') == r[0]["rid"])
-                    if info1[0]["priority"] > t[0]["priority"]:
-                        cid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
-                        res.update({'cid' : cid}, (query.rid == user["rid"]) & (query.did == did))
-                        info = conf.search((where('rid') == user["rid"]) & (where('did') == did))
-                        if not info:
-                            obj = asynct.search((query.rid == user["rid"]) & (query.did == did))
-                            conf.insert({'configurations': obj[0]['configurations'],'content' : obj[0]['content'], 'rid' : user["rid"], 'did' : did})
-                        dstate.update({'state' : "paused"},(query.id == r[0]["did"]) & (query.rid == r[0]["rid"]))
-                        dstate.insert({'cid' : cid, 'rid' : user["rid"], 'state' : 'active','id' : did})
-                        return 'channel-id is %s'%cid
-                    else:
-                        return 'high priority task executing'
-                else:
-                    cid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
-                    res.update({"cid": cid}, (query.rid == user["rid"]) & (query.did == did))
-                    info = conf.search((where('rid') == user["rid"]) & (where('did') == did))
-                    if not info:
-                        obj = asynct.search((query.rid == user["rid"]) & (query.did == did))
-                        conf.insert({'configurations': obj[0]['configurations'], 'content': obj[0]['content'], 'rid': user["rid"], 'did': did})
-                    dstate.insert({'cid': cid, 'rid': user["rid"], 'state': 'active', 'id': did})
-                    return 'channel-id is %s' % cid
-            else:
-                return 'time outside reservation time'
+                return Response('time outside reservation time',status=408)
         else:
-            return 'gid/did and rid not found'
+            return Response('rid invalid or missing',status=404)
     else:
-        return 'invalid user id or password'
-
+        return Response('invalid user id or password',status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 @app.route('/close/channel',methods = ['POST'])
 
 def clchannel():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
+    cid = user.get('cid')
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        info = res.search(((where('rid') == user["rid"]) | (where('cid') == user["cid"])) & (where('uid') == uid))
+        info = res.search((where('cid') == cid) & (where('uid') == uid))
         if info:
-            n = datetime.now()
-            now = time.mktime(n.timetuple())
-            et_obj = info[0]['end-time']
-            if ( now > et_obj):
-                res.remove((where('cid') == user["cid"]) | (where ('rid') == user["rid"]))
-                conf.remove(where ('rid') == user["rid"])
-                asynct.remove(where('rid') == user["rid"])
-                dstate.remove(where('cid') == user["cid"])
-                return 'reservation time exceeded'
-            else:
-                res.remove((where('cid') == user["cid"]) | (where('rid') == user["rid"]))
-                conf.remove(where('rid') == user["rid"])
-                asynct.remove(where('rid') == user["rid"])
-                dstate.remove(where('cid') == user["cid"])
-                return 'channel closed'
+            r = res.search(where('cid') == cid)
+            conf.remove(where('cid') == cid)
+            asynct.remove(where('rid') == r[0]['rid'])
+            dstate.remove(where('cid') == cid)
+            return Response('channel closed',status=200)
         else:
-            return 'cid or rid does not exist'
+            return Response('cid invalid or missing',status=400)
     else:
-        return 'invalid user id or password'
+        return Response('invalid user id or password',status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
 @app.route('/suspend/channel', methods=['POST'])
 
 def schannel():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
+    cid = user.get('cid')
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        info = res.search(((where('rid') == user["rid"]) | (where('cid') == user["cid"])) & (where('uid') == uid))
+        info = res.search((where('cid') == cid) & (where('uid') == uid))
         if info:
             now = datetime.now()
             et_obj = info[0]['end-time']
             now_obj = time.mktime(now.timetuple())
             if (now_obj < et_obj):
-                dstate.update({"pause-time": now_obj, "state": "paused"}, (query.id == user["gid"]) & (query.cid == user["cid"]))
-                return 'channel suspended'
+                dstate.update({"pause-time": now_obj, "state": "paused"},query.cid == cid)
+                return Response('channel suspended',status=200)
             else:
-                st = res.search(where('cid') == user["cid"])
-                conf.remove(where('rid') == st["rid"])
-                asynct.remove(where('rid') == st["rid"])
-                res.remove(where('cid') == user["cid"])
-                dstate.remove(where('cid') == user["cid"])
-                return 'reservation time exceeded '
+                return Response('reservation time exceeded',status=408)
         else:
-            return 'cid or rid does not exist'
+            return Response('cid invalid or missing', status=400)
     else:
-        return 'invalid user id or password'
+        return Response('invalid user id or password', status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
 
 @app.route('/resume/channel', methods=['POST'])
 
 def rchannel():
+  try:
     user = json.loads(request.data)
     uid = request.headers['id']
     pwd = request.headers['password']
+    cid = user.get('cid')
     if (users.count(where('id') == uid)) & (verify_password(uid, pwd)):
-        info = res.search(((where('rid') == user["rid"]) | (where('cid') == user["cid"])) & (where('uid') == uid))
-        if info:
+        info = res.search((where('cid') == cid) & (where('uid') == uid))
+        if info :
             n = datetime.now()
             et_obj = info[0]['end-time']
             now = time.mktime(n.timetuple())
-            if (now > et_obj):
-                st = res.search(where('cid') == user["cid"])
-                conf.remove(where('rid') == st["rid"])
-                asynct.remove(where('rid') == st["rid"])
-                res.remove(where('cid') == user["cid"])
-                dstate.remove(where('cid') == user["cid"])
-                return 'reservation time exceeded '
+            if now > et_obj:
+                return Response('reservation time exceeded',status=408)
             else:
-                dstate.update({"resume-time": now, "state": "active"}, (query.id == user["gid"]) & (query.cid == user["cid"]))
-                return 'channel resumed'
+                if dstate.search(where('cid') == cid):
+                    dstate.update({"resume-time": now, "state": "active"},query.cid == cid)
+                    return Response('channel resumed',status=200)
+                else:
+                    return Response('channel not suspended',status=400)
         else:
-            return 'cid or rid does not exist'
+            return Response('cid invalid or missing',status=404)
     else:
-        return 'invalid user id or password'
+        return Response('invalid user id or password',status=401)
+  except json.decoder.JSONDecodeError:
+    return Response('request body empty', status=400)
+
+def opfunc():
+  try:
+    n = datetime.now()
+    now = time.mktime(n.timetuple())
+    r = res.search(where('start-time') == now)
+    if r:
+        for i in r:
+            rid = r[i]['rid']
+            gid1 = r[i]['gid']
+            re = dstate.search(where('id') == gid1)
+            if re:
+                t = res.search(where('rid') == re['rid'])
+                if r[i]["priority"] > t[0]["priority"]:
+                    obj = asynct.search(where('rid') == rid)
+                    if obj != None :
+                        conf.insert({'configurations': obj[0]['configurations'], 'content': obj[0]['content'], 'rid': rid})
+                        dstate.update({'state': "paused", "pause-time": now}, (query.id == gid1) & (query.rid == t['rid']))
+                        dstate.insert({'rid': rid, 'state': 'active', 'id': gid1, 'rid': rid})
+                        return Response('device active', status=200)
+                    else:
+                        return Response('no configurations found', status=404)
+                else:
+                    return Response('high priority task executing', status=409)
+            else:
+                obj = asynct.search(where('rid') == rid)
+                if obj != None:
+                    conf.insert({'configurations': obj[0]['configurations'], 'content': obj[0]['content'], 'rid': rid})
+                    dstate.insert({'rid': rid, 'state': 'active', 'id': gid1})
+                    return Response('device active', status=200)
+                else:
+                    return Response('no configurations found', status=404)
+    else:
+        return Response('', status=200)
+  except json.decoder.JSONDecodeError:
+    return Response('', status=404)
+
+def clfunc():
+  try:
+    n = datetime.now()
+    now = time.mktime(n.timetuple())
+    r = res.search(where('end-time') == now)
+    if r:
+        for i in r:
+            rid = r[i]['rid']
+            gid1 = r[i]['gid']
+            re = dstate.search(where('id') == gid1)
+            if re:
+                dstate.remove(where('cid') == r[i]['cid'])
+            res.remmove(where('rid') == rid)
+            conf.remove(where('cid') == r[i]['cid'])
+            asynct.remove(where('rid') == rid)
+            return Response('reservation time exceeded', status=408)
+    else:
+         return Response('', status=200)
+  except json.decoder.JSONDecodeError:
+    return Response('', status=404)
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=opfunc, trigger="interval", seconds=1)
+scheduler.add_job(func=clfunc, trigger="interval", seconds=1)
+scheduler.start()
+
 
 def priority():
     return 'low'
