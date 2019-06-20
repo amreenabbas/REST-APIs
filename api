@@ -10,18 +10,18 @@ import random
 import string
 import psycopg2
 from apscheduler.schedulers.background import BackgroundScheduler
+import logging
 
 import time
 
 
 app = Flask(__name__)
 auth = HTTPBasicAuth()
-try:
-    connection = psycopg2.connect(user = "myuser",password="password",host = "127.0.0.1",port = "5432", database = "test")
-    cur = connection.cursor()
 
-except(Exception, psycopg2.Error) as error:
-    print("Error while connecting to postgreSQL",error)
+
+
+connection = psycopg2.connect(user = "myuser",password = "password",host = "127.0.0.1",port = "5432", database = "postgres")
+cur = connection.cursor()
 
 @app.route("/signup", methods=["POST"])
 def add_user():
@@ -33,27 +33,26 @@ def add_user():
     if user_id.isalnum() == False:
 	return Response('Id should be only alphanumeric', status=400) 
     query = """select * from users where uid = %s"""
-    cur.execute(query, (user_id))
+    cur.execute(query,(user_id, ))
     record = cur.fetchone()
     if record != None:
 	return Response('Id already exists', status=409)
-    user_password = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
+    user_apikey = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
     salt = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(10)])
-    h = user_id + salt + user_password
-    ha = generate_password_hash(h)
-    cur.execute("""INSERT INTO users (uid,salt,hash,type) VALUES(user_id,salt,ha,"user")""")
+    apikey_hash = generate_password_hash(user_id + salt + user_apikey)
+    cur.execute("""INSERT INTO users (uid,salt,hash,type) VALUES (%s,%s,%s,%s)""",(user_id,salt,apikey_hash,"user"))
     connection.commit()
-    d = {"id": user_id, "password": user_password}
-    return make_response(jsonify(d), 201)
+    id_response = {"id": user_id, "apikey": user_apikey}
+    return make_response(jsonify(id_response), 201)
 
-def verify_password(uid, pwd):
+def verify_apikey(uid, pwd):
     sql_select_query = """select * from users where uid = %s"""
-    cur.execute(sql_select_query, (uid))
-    record = cursor.fetchone()	    
+    cur.execute(sql_select_query, (uid, )) 
+    record = cur.fetchone()	    
     if record != None:
-	salt = record['salt']
-	passw = uid + salt + pwd
-	if check_password_hash(record['password'], passw):
+	salt = record[1]
+	user_apikey = uid + salt + pwd
+	if check_password_hash(record[2], user_apikey):
 	    return True
 	else:
 	    return False
@@ -64,75 +63,88 @@ def verify_password(uid, pwd):
 @app.route('/groups', methods=['POST'])
 def crgroup():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    if uid.isalnum() == False:
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    if user_id.isalnum() == False:
 	return Response('Id should be only alphanumeric', status=400) 
-    t = user.get('resources')
-    gn = user.get('group-name')
-    if gn.isalnum() == False:
+    resources = body.get('resources')
+    resources_json = json.dumps(resources)
+    group_name = body.get('group-name')
+    if group_name.isalnum() == False:
 	return Response('group name should be only alphanumeric', status=400) 
-    if verify_password(uid, pwd):
-	if t:
-	    f = 0	    
-	    for i in range(0, len(t)): 
+    if verify_apikey(user_id, user_apikey):
+	if resources != None:
+	    flag = 0	    
+	    for resource in range(0, len(resources)): 
 		query = """select * from devices where did = %s"""
-    		cur.execute(query, (t[i]))
+    		cur.execute(query, (resources[resource],))
     		record = cur.fetchone()
-		if (record == None) | (record['type'] == 'admin'):
-		    f = 1
-		    break;		    
-	    if f == 1:
+		if record == None :
+		    flag = 1
+		    break;
+		elif record[1] == 'admin':
+	            flag = 1
+		    break;			    
+	    if flag == 1:
 	        return Response('resources invalid', status=400)
 	    else:
-		if gn != None:
-		    g = uid+'/'+gn
+		if group_name == None:
+		    gid = user_id+'-'+"".join([random.choice(string.ascii_lowercase + string.digits) for i in range(10)])
 		else:
-	            g = uid+'/'+"".join([random.choice(string.ascii_lowercase + string.digits) for i in range(10)])
-	        cur.execute("""INSERT INTO groups (gid,uid,device_list) VALUES(g,uid,r)""")
+	            gid = user_id+'-'+group_name
+		    sql_select_query = """select * from groups where uid = %s and gid = %s"""
+    		    cur.execute(sql_select_query, (user_id,gid))
+    		    record = cur.fetchone()
+		    if record != None:
+			return Response('group name with this user id already exists', status=409)
+	        cur.execute("""INSERT INTO groups (gid,uid,device_list) VALUES(%s,%s,%s)""",(gid,user_id,resources_json))
 	        connection.commit()			
-	        d = {"gid": g}
-	        return make_response(jsonify(d), 201)
+	        gid_response = {"gid": gid}
+	        return make_response(jsonify(gid_response), 201)
 	else:
             return Response('resources missing', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
 
 
 @app.route('/groups/<gid>', methods=['PUT', 'DELETE'])
-def upgroup(id, gid):
+def upgroup( gid):
     if request.method == 'PUT':
 	try:
-	    user = json.loads(request.data)
+	    body = json.loads(request.data)
 	except Exception as e:
 	    return Response("i=Invalid body", status=400)
-	uid = request.headers['id']
-	pwd = request.headers['password']
-	if (uid.isalnum() == False) | (gid.isalnum() == False):
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
+	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
-	t = user.get('resources')
-	if verify_password(uid, pwd):
+	resources = body.get('resources')
+	resources_json = json.dumps(resources) 
+	if verify_apikey(user_id, user_apikey):
 	    sql_select_query = """select * from groups where uid = %s and gid = %s"""
-    	    cur.execute(sql_select_query, (uid,gid))
+    	    cur.execute(sql_select_query, (user_id,gid))
     	    record = cur.fetchone()	    
     	    if record != None:
-		if t:	
-	            f = 0	    
-	            for i in range(0, len(t)): 
+		if resources:	
+	            flag = 0	    
+	            for resource in range(0, len(resources)): 
 		        query = """select * from devices where did = %s"""
-    			cur.execute(query, (t[i]))
+    			cur.execute(query,(resources[resource], ))
     			record = cur.fetchone()
-		        if (record == None) | (record['type'] == 'admin'):
+		        if record == None :
 		            f = 1
-		            break;		    
-	            if f == 1:
+		            break;
+			elif record[1] == 'admin':
+			    flag = 1
+		            break;	    
+	            if flag == 1:
 	        	return Response('resources invalid', status=400)
 	    	    else:
-		    	sql_update_query = """UPDATE groups set resources = %s where gid = %s"""
-	            	cur.execute(sql_update_query, (r, gid))
+		    	sql_update_query = """UPDATE groups set device_list = %s where gid = %s"""
+	            	cur.execute(sql_update_query, (resources_json, gid))
 		    	connection.commit()			    
 		    	return Response('group updated', status=200)
 		else:
@@ -140,92 +152,96 @@ def upgroup(id, gid):
 	    else:
 		return Response('invalid user id or gid',status=400)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 	
 
     elif request.method == 'DELETE':
-	uid = request.headers['id']
-	pwd = request.headers['password']
-	if (uid.isalnum() == False) | (gid.isalnum() == False):
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
+	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
-	if verify_password(uid, pwd):
+	if verify_apikey(user_id, user_apikey):
 	    sql_select_query = """select * from groups where uid = %s and gid = %s"""
-    	    cur.execute(sql_select_query, (uid,gid))
+    	    cur.execute(sql_select_query, (user_id,gid))
     	    record = cur.fetchone()	    
     	    if record != None:
 	        sql_delete_query = """Delete from groups where uid = %s and gid = %s"""
-                cur.execute(sql_delete_query, (uid,gid ))
+                cur.execute(sql_delete_query, (user_id,gid ))
                 connection.commit()
 		return Response('group deleted', status=200)
 	    else:
 		return Response('gid not found', status=404)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 
 
 @app.route('/reservations', methods=['POST'])
 def reserve():
     try:
-	user = json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body",status=400)
-    gi = user.get("gid")
-    u_id = request.headers['id']
-    pwd = request.headers['password']
-    if (u_id.isalnum() == False) | (gi.isalnum() == False):
+    gid = body.get("gid")
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    if (user_id.isalnum() == False) :
 	return Response('Id should be only alphanumeric', status=400) 
-    f = user.get("frequency")
-    if (f.isalpha() == False) & (f != None):
-	return Response('frequency should be either hourly, daily or weekly', status=400) 
-    du = user.get("duration")
+    frequency = body.get("frequency")
+    if frequency != None:
+	if frequency.isalpha() == False:
+	    return Response('frequency should be either hourly, daily or weekly', status=400) 
+    duration = body.get("duration")
+    duration_seconds = 0
     try:
-        st_obj = datetime.strptime(user["start-time"], '%Y-%m-%d %H:%M:%S')
-        et_obj = datetime.strptime(user["end-time"], '%Y-%m-%d %H:%M:%S')
-        s = time.mktime(st_obj.timetuple())
-        e = time.mktime(et_obj.timetuple())
+        reservation_start_time_obj = datetime.strptime(body["start-time"], '%Y-%m-%d %H:%M:%S')
+        reservation_end_time_obj = datetime.strptime(body["end-time"], '%Y-%m-%d %H:%M:%S')
+        reservation_start_time = time.mktime(reservation_start_time_obj.timetuple())
+        reservation_end_time = time.mktime(reservation_end_time_obj.timetuple())
     except ValueError:
            return Response('invalid date format', status=400)
-    if f == None:
-	f = NULL
-	h = NULL 
-	st = s
-	et = e
+    if frequency == None:
+	start_time = reservation_start_time
+	end_time = reservation_end_time
     else:
-	if du == None:
+	if duration == None:
 	    return Response('duration missing', status=400)
 	else:
-	    g,m,s = du.split(':')
-            h = int(g)*3600+int(m)*60+int(s)
-            st = s
-            et = s+h
-    if verify_password(uid, pwd):
-	if gi:		
-	    f = 0
-	    record =""
-	    for i in range(0, len(gi)):	
-	        sql_select_query = """select device_list from groups where uid = %s and gid = %s"""
-    	        cur.execute(sql_select_query, (u_id,t[i]))
-    	        d = cur.fetchone()	
-		record = record+d    
-    	    if record != None:
-	        q = """select device_list from reservations as r, device_state as s where r.rst >= %s and r.ret <= %s and r.rid = s.rid"""		    
-	        cur.execute(q, (s,e))
-    	        r = cur.fetchall()
-	        if r != None:
-		    for row in r:
-		        if list(set(record) & set(row)) != None:	 
-			    f = 1
-	        if f == 0:
-		    ri = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
-		    p = priority()
-		    cur.execute("""INSERT INTO reservations (rid,rst,ret,st,et,frequency,duration) VALUES(ri,s,e,st,et,f,h)""")
+	    first_index = du.find(':')
+	    last_index = du.rfind(':')
+	    if first_index == last_index :
+		hours = 0
+		minutes,seconds = duration.split(':')
+	    else:
+	        hours,minutes,seconds = duration.split(':')
+            duration_seconds = int(hours)*3600 + int(minutes)*60 + int(seconds)
+            start_time = reservation_start_time
+            end_time = reservation_start_time + duration_seconds
+    if verify_apikey(user_id, user_apikey):
+	if gid != None:		
+	    flag = 0
+	    sql_select_query = """select device_list from groups where uid = %s and gid = %s"""
+    	    cur.execute(sql_select_query, (user_id,gid))
+    	    device_list = cur.fetchone()
+    	    if device_list != None:
+	        query = """select * from reservations as r, device_state as s where r.rst >= %s and r.ret <= %s and r.rid = s.rid"""		    
+	        cur.execute(query, (reservation_start_time, reservation_end_time))
+    	        records = cur.fetchall()
+	        if records != None:
+		    for record in records:
+			active_device_list = [device for device in device_list if value in record[9]]
+		        if active_device_list != []:	 
+			    flag = 1
+	        if flag == 0:
+		    rid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
+		    priority = setpriority()
+		    cur.execute("""INSERT INTO reservations (rid,rst,ret,st,et,frequency,duration,state) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",(rid,reservation_start_time,reservation_end_time,start_time,end_time,frequency,duration_seconds,'inactive'))
     		    connection.commit()	
-		    cur.execute("""INSERT INTO device_state (rid,device_list) VALUES(ri,record)""")
+		    cur.execute("""INSERT INTO device_state (rid,device_list) VALUES (%s,%s)""",(rid,json.dumps(device_list)))
 		    connection.commit()	
-		    cur.execute("""INSERT INTO reservations_info (rid,uid,priority) VALUES(ri,u_id,p)""")
+		    cur.execute("""INSERT INTO reservations_info (rid,uid,priority) VALUES(%s,%s,%s)""",(rid,user_id,priority))
     		    connection.commit()
-		    d = {"rid": r}
-		    return make_response(jsonify(d), 201)
+		    rid_response = {"rid": rid}
+		    return make_response(jsonify(rid_response), 201)
 		else:
 		    return Response('already reserved', status=409)
 	    else:
@@ -233,78 +249,94 @@ def reserve():
 	else:
 	    return Response('gid missing', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
 
 
 @app.route('/reservations/<rid>', methods=['PUT', 'DELETE'])
 def upreserve(rid):
     if request.method == 'PUT':
 	try:
-	    user = json.loads(request.data)
+	    body = json.loads(request.data)
 	except Exception as e:
 	    return Response("i=Invalid body", status=400)
-	u_id = request.headers['id']
-	pwd = request.headers['password']
-	if (u_id.isalnum() == False) | (rid.isalnum() == False):
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
+	if (user_id.isalnum() == False) | (rid.isalnum() == False):
 	    return Response('Id should be only alphanumeric', status=400) 
-	fr = user.get("frequency")
-	du = user.get("duration")
-	if (f.isalpha() == False) & (f != None):
-	    return Response('frequency should be either hourly, daily or weekly', status=400) 
-	if (f != None) & (du == None):
+	frequency = body.get("frequency")
+	duration = body.get("duration")
+	if frequency != None:
+	    if frequency.isalpha() == False:
+	        return Response('frequency should be either hourly, daily or weekly', status=400) 
+	if (frequency != None) & (duration == None):
 	    return Response('duration missing', status=400)
-	if verify_password(uid, pwd):
-	    q = """select * from reservations_info as r, device_state as s where r.rid = %s and r.uid = %s and r.rid = s.rid"""		    
-	    cur.execute(q, (rid,u_id))
-    	    r = cur.fetchone()
-	    q = """select * from reservations rid = %s"""		    
-	    cur.execute(q, (rid))
-    	    rd = cur.fetchone()
-	    if r != None:
-		if (user.get("start-time") != None) & (user.get("end-time") != None):
+	if verify_apikey(user_id, user_apikey):
+	    query = """select * from reservations_info as r, device_state as s where r.rid = %s and r.uid = %s and r.rid = s.rid"""		    
+	    cur.execute(query, (rid,user_id))
+    	    reservation_info = cur.fetchone()
+	    query = """select * from reservations where rid = %s"""		    
+	    cur.execute(query, (rid, ))
+    	    record = cur.fetchone()
+	    if reservation_info != None:
+		if (body.get("start-time") == None) & (body.get("end-time") == None):
+		    reservation_start_time = record[1]
+		    reservation_end_time = record[2]
+		    start_time = reservation_start_time
+		if (body.get("start-time") != None) & (body.get("end-time") != None):
 		    try:
-		        st_obj = datetime.strptime(user.get("start-time"), '%Y-%m-%d %H:%M:%S')
-		        et_obj = datetime.strptime(user.get("end-time"), '%Y-%m-%d %H:%M:%S')
-		        s = time.mktime(st_obj.timetuple())
-		        e = time.mktime(et_obj.timetuple())	
+		        start_time_obj = datetime.strptime(body.get("start-time"), '%Y-%m-%d %H:%M:%S')
+		        end_time_obj = datetime.strptime(body.get("end-time"), '%Y-%m-%d %H:%M:%S')
+		        start_time_seconds = time.mktime(start_time_obj.timetuple())
+		        end_time_seconds = time.mktime(end_time_obj.timetuple())	
 		    except ValueError:
            		return Response('invalid date format', status=400)
-		    rst = s
-		    ret = e	
-		elif user.get("start-time") != None:
+		    reservation_start_time = start_time_seconds
+		    reservation_end_time = end_time_seconds
+		    start_time = reservation_start_time
+		elif body.get("start-time") != None:
 		    try:
-		        st_obj = datetime.strptime(user.get("start-time"), '%Y-%m-%d %H:%M:%S')
-		        s = time.mktime(st_obj.timetuple())
+		        start_time_obj = datetime.strptime(body.get("start-time"), '%Y-%m-%d %H:%M:%S')
+		        start_time_seconds = time.mktime(start_time_obj.timetuple())
 		    except ValueError:
            		return Response('invalid date format', status=400)
-		    rst = s
-		    ret = rd['et']
-		elif user.get("end-time") != None:
+		    reservation_start_time = start_time_seconds
+		    reservation_end_time = record[4]
+		    start_time = reservation_start_time
+		elif body.get("end-time") != None:
 		    try:
-		        et_obj = datetime.strptime(user.get("end-time"), '%Y-%m-%d %H:%M:%S')
-		        e = time.mktime(et_obj.timetuple())
+		        end_time_obj = datetime.strptime(body.get("end-time"), '%Y-%m-%d %H:%M:%S')
+		        end_time_seconds = time.mktime(end_time_obj.timetuple())
 		    except ValueError:
            		return Response('invalid date format', status=400)
-		    ret = e
-		    rst = rd['st']
-		if fr == None:
-		    fr = rd['frequency']
-		    du = rd['duration']
+		    reservation_end_time = end_time_seconds
+		    reservation_start_time = record[3]
+		    start_time = reservation_start_time
+		if frequency == None:
+		    frequency = record[6]
+		end_time = record[4]
+		if duration != None:
+		    first_index = duration.find(':')
+	    	    last_index = duration.rfind(':')
+	    	    if first_index == last_index :
+		        hours = 0
+		        minutes,seconds = duration.split(':')
+	            else:
+	                hours,minutes,seconds = duration.split(':')
+                    duration_seconds = int(hours)*3600 + int(minutes)*60 + int(seconds)
+                    end_time = start_time + duration_seconds
 		else:
-		    g,m,s = du.split(':')
-                    h = int(g)*3600+int(m)*60+int(s)
-                    st = rst
-                    et = st+h
-       	        f = 0
-	        q = """select device_list from reservations as r, device_state as s where r.rst >= %s and r.ret <= %s and r.rid = s.rid"""		    
-	        cur.execute(q, (rst,ret))
-    	        re = cur.fetchall()
-	        if re != None:
-		    if list(set(r["deviced_list"]) & set(re)) != None:	 
-			f = 1
-	        if f == 0:
-		    sql_updatequery = """UPDATE reservations set rst = %s and ret = %s and frequency = %s and st = %s and et = %s and duration = %s where rid = %s"""
-	            cur.execute(sql_updatequery, (rst,ret,fr,st,et,h,rid))
+		    duration_seconds = record[7]
+		    end_time = record[4]
+       	        flag = 0
+	        query = """select device_list from reservations as r, device_state as s where r.rst >= %s and r.ret <= %s and r.rid = s.rid and r.rid != %s"""		    
+	        cur.execute(query, (reservation_start_time,reservation_end_time,rid))
+    	        device_list = cur.fetchall()
+	        if device_list != []:
+		    if (device for device in device_list if value in reservation_info[5]) != None:	 	 
+			flag = 1
+	        if flag == 0:
+		    sql_update_query = """UPDATE reservations set rst = %s, ret = %s, frequency = %s, st = %s, et = %s, duration = %s where rid = %s"""
+	            cur.execute(sql_update_query, (reservation_start_time,reservation_end_time,frequency,start_time,end_time,duration_seconds,rid))
 		    connection.commit()			            
 		    return Response('reservation updated', status=200)
 		else:
@@ -312,318 +344,365 @@ def upreserve(rid):
 	    else:
 		return Response('invalid user id or rid', status=400)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 
     elif request.method == 'DELETE':
-	uid = request.headers['id']
-	pwd = request.headers['password']
-	if (uid.isalnum() == False) | (rid.isalnum() == False):
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
+	if (user_id.isalnum() == False) | (rid.isalnum() == False):
 	    return Response('Id should be only alphanumeric', status=400) 
-	if verify_password(uid, pwd):
+	if verify_apikey(user_id, user_apikey):
 	    sql_select_query = """select * from reservations_info where rid = %s and uid = %s"""
-    	    cur.execute(sql_select_query, (rid,uid))
+    	    cur.execute(sql_select_query, (rid,user_id))
     	    record = cur.fetchone()	    
     	    if record != None:		    
-		sql_delete_query = """Delete from reservations where rid = %s"""
-                cur.execute(sql_delete_query, (uid,rid ))
-                connection.commit()
 		sql_delete_query = """Delete from reservations_info where rid = %s"""
-                cur.execute(sql_delete_query, (uid,rid ))
+                cur.execute(sql_delete_query, (rid, ))
                 connection.commit()
 		query = """Delete from device_state where rid = %s"""
-                cur.execute(query, (rid ))
+                cur.execute(query, (rid, ))
                 connection.commit()
 		query = """Delete from configure where rid = %s"""
-                cur.execute(query, (rid ))
+                cur.execute(query, (rid, ))
                 connection.commit()
 		query = """Delete from write_op where rid = %s"""
-                cur.execute(query, (rid ))
-                connection.commit()			
+                cur.execute(query, (rid, ))
+                connection.commit()		
+		sql_delete_query = """Delete from reservations where rid = %s"""
+                cur.execute(sql_delete_query, (rid, ))
+                connection.commit()	
 		return Response('reservation deleted', status=200)
 	    else:
 		return Response('invalid user id or rid', status=400)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 
 
 @app.route('/sync-configurations', methods=['POST', 'PUT', 'DELETE'])
 def configure():
     if request.method == 'POST':
 	try:
-	    user = json.loads(request.data)
+	    body = json.loads(request.data)
 	except Exception as e:
 	    return Response("i=Invalid body", status=400)
-	uid = request.headers['id']
-	pwd = request.headers['password']
-	rid = user.get('rid')
-	t = user.get('id')
-	cid = user.get('cid')
-	if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
+	rid = body.get('rid')
+	did_list = body.get('id')
+	cid = body.get('cid')
+	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
-	confi = user.get('configurations')
-	if verify_password(uid, pwd):
-	    if (rid != None) | (cid != None):
-	        q = """select * from reservations_info where (rid = %s or cid = %s) and uid = %s and cid != %s"""		    
-	        cur.execute(q, (rid,cid,uid,NULL))
-    	        r = cur.fetchone()
-		q = """select device_list from device_state where rid = %s"""		    
-	        cur.execute(q, (r["rid"]))
-    	        rd = cur.fetchone()
-		query = """select * from configure where rid = %s and type = %s"""
-    		cur.execute(query, (r["rid"],'sync'))
-                reco = cur.fetchone()
-	        if reco != None:
-		    return Response('configurations already created for given rid or cid, you can update it through put method', status=405)	
-		else:
-	            if r != None:		    
-		        if confi:
-		            if (t != None):
-	                        f = 0
-			        if all(x in rd for x in t):
-			            f = 1
-			        if f:			
-			            cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES(rid,confi,'sync',t)""")
-    		                    connection.commit()	
-		                    return Response('configurations stored', status=200)
-			        else:
-			            return Response('invalid did', status=400)
-		            else:
-			        cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES(rid,confi,'sync',rd)""")
+	configurations = body.get('configurations')
+	if verify_apikey(user_id, user_apikey):
+	    if (rid == None) & (cid == None):
+		return Response('rid or cid missing', status=400)
+	    elif rid != None:
+	        query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
+	        cur.execute(query, (rid,user_id))
+    	        reservation_info = cur.fetchone()
+	    elif cid != None:
+		query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	        cur.execute(query, (cid,user_id))
+    	        reservation_info = cur.fetchone()
+	    if reservation_info == None:
+		return Response('invalid rid or cid', status=400)
+	    query = """select * from device_state where rid = %s"""
+	    cur.execute(query, (reservation_info[0], ))
+    	    device_info = cur.fetchone()
+	    query = """select * from configure where rid = %s and type = %s"""
+    	    cur.execute(query, (reservation_info[0],'sync'))
+            configurations_record = cur.fetchone()
+	    if configurations_record != None:
+		return Response('configurations already created for given rid or cid, you can update it through put method', status=405)	
+	    else:
+	        if reservation_info != None:		    
+		    if configurations:
+		        if (did_list != None):
+	                    flag = 0
+			    for device_list in device_info[1]:
+			        if all(device in device_list for device in did_list):
+			            flag = 1
+			    if flag:			
+			        cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES (%s,%s,%s,%s)""",(reservation_info[0],json.dumps(configurations),'sync',json.dumps(did_list)))
+    		                connection.commit()	
+		                return Response('configurations stored', status=200)
+			    else:
+			        return Response('invalid did', status=400)
+		        else:
+			    for device_list in device_info[1]:
+			        cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES (%s,%s,%s,%s)""",(reservation_info[0],json.dumps(configurations),'sync',json.dumps(device_list)))
     		                connection.commit()	
 		                return Response('configurations stored', status=200)  
-		        else:
-		            return Response('configurations missing', status=400)
-	            else:
-		        return Response('rid or cid invalid', status=400)
-	    else:
-	        return Response('rid or cid missing', status=400)
+		    else:
+		        return Response('configurations missing', status=400)
+	        else:
+		    return Response('rid or cid invalid', status=400)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 
   
     if request.method == 'PUT':
 	try:
-	    user=json.loads(request.data)
+	    body = json.loads(request.data)
 	except Exception as e:
 	    return Response("Invalid body", status=400)
-	uid = request.headers['id']
-	pwd = request.headers['password']
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
 	if user_id.isalnum() == False:
 	    return Response('Id should be only alphanumeric', status=400) 
-	cid = user.get('cid')
-	rid = user.get('rid')
-	idj = user.get('id')
-	if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+	cid = body.get('cid')
+	rid = body.get('rid')
+	did_list = body.get('id')
+	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
-	confi = user.get('configurations')
-	if verify_password(uid, pwd):
-	    if (rid != None) | (cid != None):
-		query = """select * from configure where rid = %s and type = %s"""
-    		cur.execute(query, (r["rid"],'sync'))
-                recod = cur.fetchone()
-	        if recod == None:
-		    return Response('configurations not created for given rid or cid, you can create it through post method', status=405)	
-		else:
-	            if confi:
-		        query = """select * from configure as c, reservations_info as r where c.rid = r.rid and c.type = %s and (r.rid = %s | r.cid = %s) and r.cid != %s and r.uid = %s"""
-    		        cur.execute(query, ('sync',rid,cid,NULL,uid))
-                        reco = cur.fetchone()
-	                if reco != None:	
-		            query = """UPDATE configure set configurations = %s where rid = %s and type = %s"""
-    		    	    cur.execute(query, (confi,reco["rid"],'sync'))
-                    	    connection.commit()
-		            return Response('configurations updated', status=200)
-		        else:
-		            return Response('configurations not created yet', status=404)
-	            else:
-		        return Response('configurations not found', status=400)
+	configurations = body.get('configurations')
+	if verify_apikey(user_id, user_apikey):
+	    if (rid == None) & (cid == None):
+		return Response('rid or cid missing', status=400)
+	    elif rid != None:
+		query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
+	        cur.execute(query, (rid,user_id))
+    	        record = cur.fetchone()
+	    elif cid != None:
+		query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	        cur.execute(query, (cid,user_id))
+    	        record = cur.fetchone()
+	    if record == None:
+		return Response('invalid rid or cid', status=400)
+	    query = """select * from configure where rid = %s and type = %s"""
+    	    cur.execute(query, (record[0],'sync'))
+            configuration_record = cur.fetchone()
+	    if configuration_record == None:
+		return Response('configurations not created for given rid or cid, you can create it through post method', status=405)	
 	    else:
-	        return Response('cid or rid found', status=400)
+	        if configurations != None:
+		    query = """UPDATE configure set configurations = %s where rid = %s and type = %s"""
+    		    cur.execute(query, (json.dumps(configurations),record[0],'sync'))
+                    connection.commit()
+		    return Response('configurations updated', status=200)
+	        else:
+		    return Response('configurations not found', status=400)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 
 
     elif request.method == 'DELETE':
 	try:
-	    user=json.loads(request.data)
+	    body = json.loads(request.data)
 	except Exception as e:
 	    return Response("Invalid body", status=400)
-	uid = request.headers['id']
-	pwd = request.headers['password']
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
 	if user_id.isalnum() == False:
 	    return Response('Id should be only alphanumeric', status=400) 
-	cid = user.get('cid')
-	rid = user.get('rid')
-	if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+	cid = body.get('cid')
+	rid = body.get('rid')
+	if (user_id.isalnum() == False):
 	    return Response('Id should be only alphanumeric', status=400) 
-	if verify_password(uid, pwd):
-	    if (rid != None) | (cid != None):
-		query = """select * from configure as c, reservations_info as r where c.rid = r.rid and c.type = %s and (r.rid = %s | r.cid = %s) and r.cid != %s and r.uid = %s"""
-    		cur.execute(query, ('sync',rid,cid,NULL,uid))
-                reco = cur.fetchone()
-		if reco != None:
-			query = """Delete from configure where type = %s  and rid = %s"""
-               	    	cur.execute(query, ( 'sync',reco["rid"]))
-                    	connection.commit()
-		    	return Response('configurations deleted', status=200)
-		else:
-		    return Response('configurations not created for given cid or rid', status=404)
+	if verify_apikey(user_id, user_apikey):
+	    if (rid == None) & (cid == None):
+		return Response('rid or cid missing', status=400)
+	    elif rid != None:
+		query = """select * from configure as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.rid = %s and r.cid != 'null' and r.uid = %s"""
+    		cur.execute(query, ('sync',rid,user_id))
+                record = cur.fetchone()
+	    elif cid != None:
+		query = """select * from configure as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.cid = %s and r.uid = %s"""
+    		cur.execute(query, ('sync',cid,user_id))
+                record = cur.fetchone()
+	    if record != None:
+		query = """Delete from configure where type = %s  and rid = %s"""
+               	cur.execute(query, ( 'sync',record[0]))
+                connection.commit()
+		return Response('configurations deleted', status=200)
 	    else:
-                return Response('cid or rid not found', status=400)
+		return Response('configurations not created for given cid or rid', status=404)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 
 
 @app.route('/sync-write', methods=['POST', 'PUT', 'DELETE'])
 def write():
     if request.method == 'POST':
 	try:
-	    user=json.loads(request.data)
+	    body = json.loads(request.data)
 	except Exception as e:
 	    return Response("Invalid body", status=400)
-	uid = request.headers['id']
-	pwd = request.headers['password']
-	cid = user.get('cid')
-	t = user.get('id')
-	rid = user.get('rid')
-	if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
+	cid = body.get('cid')
+	did_list = body.get('id')
+	rid = body.get('rid')
+	if user_id.isalnum() == False:
 	    return Response('Id should be only alphanumeric', status=400) 
-	con = user.get('content')
-	if verify_password(uid, pwd):
-	    if (rid != None) | (cid != None):
-	        q = """select * from reservations_info where (rid = %s or cid = %s)and uid = %s and cid != %s"""		    
-	        cur.execute(q, (rid,u_id,cid,NULL))
-    	        r = cur.fetchone()
-		query = """select * from write_op where rid = %s and type = %s"""
-    		cur.execute(query, (r["rid"],'sync'))
-                reco = cur.fetchone()
-		q = """select device_list from device_state where rid = %s"""		    
-	        cur.execute(q, (r["rid"]))
-    	        rd = cur.fetchone()
-	        if reco != None:
-		    return Response('content already written for given rid or cid, you can update it through put method', status=405)	
+	content = body.get('content')
+	if verify_apikey(user_id, user_apikey):
+	    if (rid == None) & (cid == None):
+		return Response('rid or cid missing', status=400)
+	    elif rid != None:
+	        query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
+	        cur.execute(query, (rid,user_id))
+    	        reservation_info = cur.fetchone()
+	    elif cid != None:
+	        query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	        cur.execute(query, (cid,user_id))
+    	        reservation_info = cur.fetchone()
+	    if reservation_info == None:
+		return Response('invalid rid or cid', status=400)
+	    query = """select * from write_op where rid = %s and type = %s"""
+    	    cur.execute(query, (reservation_info[0],'sync'))
+            record = cur.fetchone()
+	    query = """select * from device_state where rid = %s"""		    
+	    cur.execute(query, (reservation_info[0], ))
+    	    device_record = cur.fetchone()
+	    if record != None:
+		return Response('content already written for given rid or cid, you can update it through put method', status=405)	
+	    else:	    
+		if content != None:
+		    if did_list != None:
+			flag = 0
+			for device_list in device_record[1]:
+			    if(all(device in device_list for device in did_list)):
+			        flag = 1
+			if flag:
+			    cur.execute("""INSERT INTO write_op (rid,content,type,id) VALUES (%s,%s,%s,%s)""",(reservation_info[0],json.dumps(content),'sync',json.dumps(did_list)))
+    		            connection.commit()	
+			    return Response('content stored', status=200)
+			else:
+			    return Response('invalid did', status=400)
+		    else:
+			for device_list in device_record[1]:
+			    cur.execute("""INSERT INTO write_op (rid,content,type,id) VALUES (%s,%s,%s,%s)""",(reservation_info[0],json.dumps(content),'sync',json.dumps(device_list)))
+    		            connection.commit()	
+			    return Response('content stored', status=200) 
 		else:
-	            if r != None:		    
-		        if con:
-		            if t != None:
-			        f = 0
-			        if all(x in rd for x in t):
-			            f = 1
-			        if f:
-			            cur.execute("""INSERT INTO write_op (rid,content,type,id) VALUES(rid,con,'sync',t)""")
-    		                    connection.commit()	
-			            return Response('content stored', status=200)
-			        else:
-			            return Response('invalid did', status=400)
-		            else:
-			        cur.execute("""INSERT INTO write_op (rid,content,type,id) VALUES(rid,con,'sync',rd)""")
-    		                connection.commit()	
-			        return Response('content stored', status=200) 
-		        else:
-		            return Response('content missing', status=400)
-	            else:
-		        return Response('rid or cid invalid', status=400)
-	    else:
-	        return Response('rid or cid missing', status=400)
+		    return Response('content missing', status=400)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 	
 
     if request.method == 'PUT':
 	try:
-	    user=json.loads(request.data)
+	    body = json.loads(request.data)
 	except Exception as e:
 	    return Response("Invalid body", status=400)
-	uid = request.headers['id']
-	pwd = request.headers['password']
-	cid = user.get('cid')
-	rid = user.get('rid')
-	if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
+	cid = body.get('cid')
+	rid = body.get('rid')
+	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
-	con = user.get('content')
-	if verify_password(uid, pwd):
-	    if (rid != None) | (cid != None):
-	        if con:
-		    query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and (r.rid = %s | r.cid = %s) and r.cid != %s and r.uid = %s"""
-    		    cur.execute(query, ('sync',rid,cid,NULL,uid))
-                    reco = cur.fetchone()
-	            if reco == None:	
-		        query = """UPDATE write_op set content = %s where rid = %s and type = %s"""
-    		    	cur.execute(query, (con,reco["rid"],'sync'))
-                    	connection.commit()
-		        return Response('content updated', status=200)
-		    else:
-		        return Response('content not written yet for given rid or cid, you can write it through post method', status=404)
-	        else:
-		    return Response('content missing', status=400)
+	content = body.get('content')
+	if verify_apikey(user_id, user_apikey):
+	    if (rid != None) & (cid != None):
+		return Response('rid or cid missing', status=400)
+	    elif rid != None:
+		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.rid = %s and r.cid != 'null' and r.uid = %s"""
+    		cur.execute(query, ('sync',rid,user_id))
+                record = cur.fetchone()
+	    elif cid != None:
+		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.cid = %s and r.uid = %s"""
+    		cur.execute(query, ('sync',cid,user_id))
+                record = cur.fetchone()
+	    if content != None:  
+	        if record != None:	
+		    query = """UPDATE write_op set content = %s where rid = %s and type = %s"""
+    		    cur.execute(query, (json.dumps(content),record[0],'sync'))
+                    connection.commit()
+		    return Response('content updated', status=200)
+		else:
+		    return Response('content not written yet for given rid or cid, you can write it through post method', status=404)
 	    else:
-	        return Response('cid or rid missing', status=400)
+		return Response('content missing', status=400)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 
        
     elif request.method == 'DELETE':
 	try:
-	    user=json.loads(request.data)
+	    body = json.loads(request.data)
 	except Exception as e:
 	    return Response("Invalid body", status=400)
-	uid = request.headers['id']
-	pwd = request.headers['password']
-	cid = user.get('cid')
-	rid = user.get('rid')
-	if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+	user_id = request.headers['id']
+	user_apikey = request.headers['apikey']
+	cid = body.get('cid')
+	rid = body.get('rid')
+	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
-	if verify_password(uid, pwd):
-	    if (rid != None) | (cid != None):
-		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and (r.rid = %s | r.cid = %s) and r.cid != %s and r.uid = %s"""
-    		cur.execute(query, ('sync',rid,cid,NULL,uid))
-                reco = cur.fetchone()
-		if reco != None:
-			query = """Delete from write_op where type = %s  and rid = %s"""
-               	    	cur.execute(query, ( 'sync',reco["rid"]))
-                    	connection.commit()
-		    	return Response('content deleted', status=200)
-		else:
-		    return Response('content not written for given cid or rid', status=404)
+	if verify_apikey(user_id, user_apikey):
+	    if (rid == None) & (cid == None):
+		return Response('rid or cid missing', status=400)
+	    elif rid != None:
+		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.rid = %s and r.cid != 'null' and r.uid = %s"""
+    		cur.execute(query, ('sync',rid,user_id))
+                record = cur.fetchone()
+	    elif cid != None:
+		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.cid = %s and r.uid = %s"""
+    		cur.execute(query, ('sync',cid,uid))
+                record = cur.fetchone()
+	    if record != None:
+		query = """Delete from write_op where type = %s  and rid = %s"""
+               	cur.execute(query, ( 'sync',record[0]))
+                connection.commit()
+		return Response('content deleted', status=200)
 	    else:
-                return Response('cid or rid not found', status=400)
+		return Response('content not written for given cid or rid', status=404)
 	else:
-	    return Response('invalid user id or password', status=401)
+	    return Response('invalid user id or apikey', status=401)
 
 
 @app.route('/async-configurations', methods=['POST'])
 def asyncconfigure():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    t = user.get('id')
-    rid = user.get('rid')
-    if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)):
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    did_list = body.get('id')
+    rid = body.get('rid')
+    if user_id.isalnum() == False:
 	return Response('Id should be only alphanumeric', status=400) 
-    confi = user.get('configurations')
-    if verify_password(uid, pwd):
+    configurations = body.get('configurations')
+    if verify_apikey(user_id, user_apikey):
 	if rid != None:
-	    q = """select * from reservations_info as r, device_state as s where r.rid = %s and r.uid = %s r.rid = s.rid"""		    
-	    cur.execute(q, (rid,uid))
-    	    r = cur.fetchone()
-	    if r != None:		    
-		if confi:
-		    if (t != None):
-	                f = 0
-			if all(x in r["device_list"] for x in t):
-			    f = 1
-			if f:			
-			    cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES(rid,confi,'async',t)""")
-    		            connection.commit()	
+	    if rid.isalnum() == False:
+		return Response('rid should be only alphanumeric', status=400)
+	    query = """select * from reservations_info as r, device_state as s where r.rid = %s and r.uid = %s and r.rid = s.rid"""		    
+	    cur.execute(query, (rid,user_id))
+    	    reservation_info = cur.fetchone()
+	    if reservation_info != None:		    
+		if configurations:
+		    if (did_list != None):
+	                flag = 0
+			for device_list in reservation_info[5]:
+			    if(all(device in device_list for device in did_list)):
+			        flag = 1
+			if flag:
+			    query = """select * from configure where rid = %s and type = %s"""		    
+	    		    cur.execute(query, (rid,'async'))
+    	    		    record = cur.fetchone()
+	    		    if record != None:
+				query = """UPDATE configure set configurations = %s where rid = %s and type = %s"""
+    		    	        cur.execute(query, (json.dumps(configurations),rid,'async'))
+                    	        connection.commit()
+			    else:				
+			        cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES (%s,%s,%s,%s)""",(rid,json.dumps(configurations),'async',json.dumps(did_list)))
+    		                connection.commit()	
 		            return Response('configurations stored', status=200)
 			else:
 			    return Response('invalid did', status=400)
 		    else:
-			cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES(rid,confi,'async',r["device_list"])""")
-    		        connection.commit()	
+			query = """select * from configure where rid = %s and type = %s"""		    
+	    		cur.execute(query, (rid,'async'))
+    	    		record = cur.fetchone()
+	    		if record != None:
+			    query = """UPDATE configure set configurations = %s where rid = %s and type = %s"""
+    		    	    cur.execute(query, (json.dumps(configurations),rid,'async'))
+                    	    connection.commit()
+			else:			
+		            cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES (%s,%s,%s,%s)""",(rid,json.dumps(configurations),'async',json.dumps(reservation_info[5])))
+    		            connection.commit()	
 		        return Response('configurations stored', status=200)    
 		else:
 		    return Response('configurations missing', status=400)
@@ -632,43 +711,62 @@ def asyncconfigure():
 	else:
 	    return Response('rid missing', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
    
 
 @app.route('/async-write', methods=['POST'])
 def asyncwrite():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    t = user.get('id')
-    rid = user.get('rid')
-    if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)):
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    did_list = body.get('id')
+    rid = body.get('rid')
+    if user_id.isalnum() == False:
 	return Response('Id should be only alphanumeric', status=400) 
-    con = user.get('content')
-    if verify_password(uid, pwd):
+    content = body.get('content')
+    if verify_apikey(user_id, user_apikey):
 	if rid != None:
-	    q = """select * from reservations_info as r, device_state as s where r.rid = %s and r.uid = %s and r.rid = s.rid"""		    
-	    cur.execute(q, (rid,uid))
-    	    r = cur.fetchall()
-	    if r != None:		    
-		if con:
-		    if t != None:
-			f = 0
-			if all(x in r["device_list"] for x in t):
-			    f = 1
-			if f:
-			    cur.execute("""INSERT INTO write_op (rid,content,type,id) VALUES(rid,con,'async',t)""")
-    		            connection.commit()	
+	    if rid.isalnum() == False:
+		return Response('rid should be only alphanumeric', status=400)
+	    query = """select * from reservations_info as r, device_state as s where r.rid = %s and r.uid = %s and r.rid = s.rid"""		    
+	    cur.execute(query, (rid,user_id))
+    	    reservation_info = cur.fetchone()
+	    if reservation_info != None:		    
+		if content != None:
+		    if did_list != None:
+			flag = 0
+			for device_list in reservation_info[5]:
+			    if(all(device in device_list for device in did_list)):
+			        flag = 1
+			if flag:
+			    query = """select * from write_op where rid = %s and type = %s"""		    
+	    		    cur.execute(query, (rid,'async'))
+    	    		    record = cur.fetchone()
+	    		    if record != None:
+				query = """UPDATE write_op set content = %s where rid = %s and type = %s"""
+    		    	        cur.execute(query, (json.dumps(content),rid,'async'))
+                    	        connection.commit()
+			    else:				
+			        cur.execute("""INSERT INTO write_op (rid,content,type,id) VALUES (%s,%s,%s,%s)""",(rid,json.dumps(content),'async',json.dumps(did_list)))
+    		                connection.commit()	
 			    return Response('content stored', status=200)
 			else:
 			    return Response('invalid did', status=400)
 		    else:
-			cur.execute("""INSERT INTO write_op (rid,content,type,id) VALUES(rid,con,'async',r["device_list"])""")
-    		        connection.commit()	
-			return Response('content stored', status=200) 
+			 query = """select * from write_op where rid = %s and type = %s"""		    
+	    		 cur.execute(query, (rid,'async'))
+    	    		 record = cur.fetchone()
+	    		 if record != None:
+			     query = """UPDATE write_op set content = %s where rid = %s and type = %s"""
+    		    	     cur.execute(query, (json.dumps(content),rid,'async'))
+                    	     connection.commit()
+			 else:				
+			     cur.execute("""INSERT INTO write_op (rid,content,type,id) VALUES (%s,%s,%s,%s)""",(rid,json.dumps(content),'async',json.dumps(reservation_info[5])))
+    		             connection.commit()	
+			 return Response('content stored', status=200) 
 	        else:
 		    return Response('content missing', status=400)
 	    else:
@@ -676,259 +774,283 @@ def asyncwrite():
 	else:
 	    return Response('rid missing', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
     
 	
 @app.route('/operational-status', methods=['POST'])
 def opstat():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    did = user.get('did')
-    rid = user.get('rid')
-    if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)):
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    did = body.get('did')
+    rid = body.get('rid')
+    if user_id.isalnum() == False:
 	    return Response('Id should be only alphanumeric', status=400) 
-    if verify_password(uid, pwd):
+    if verify_apikey(user_id, user_apikey):
 	if rid != None:
+	    if rid.isalnum() == False:
+		return Response('rid should be only alphanumeric', status=400)
 	    query = """select * from device_state as s, reservations as r where s.rid = r.rid and r.rid = %s"""
-            cur.execute(query, (rid))
-            reco = cur.fetchone()
+            cur.execute(query, (rid, ))
+            record = cur.fetchone()
+	    if record == []:	
+	        return Response('invalid rid', status=204)
 	    if did != None:
-	        if did in reco["device_list"]:
-	            d = {"status": reco["state"]}
-		    return make_response(jsonify(d), status=200)
+	        for device_list in reco[1]:
+		    try:
+		        device_present = device_list.index(did[0])
+	                device_status = {"status": record[7]}
+		        return make_response(jsonify(device_status), 200)
+		    except Exception as ValueError:
+		        return Response('invalid did', status=400)
 	        else:
 		    return Response('invalid did', status=400)
 	    else:
-		d = {"status": reco["state"]}
-		return make_response(jsonify(d), status=200)
+		device_status = {"status": record[7]}
+		return make_response(jsonify(device_status), 200)
 	else:
 	    return Response('rid missing', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
 
     
 @app.route('/device-status', methods=['POST'])
 def devstat():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    did = user.get('did')
-    rid = user.get('rid')
-    if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)):
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    did = body.get('did')
+    rid = body.get('rid')
+    if user_id.isalnum() == False:
 	return Response('Id should be only alphanumeric', status=400) 
-    if verify_password(uid, pwd):
+    if verify_apikey(user_id, user_apikey):
 	if rid != None:
+	    if rid.isalnum() == False:
+		return Response('rid should be only alphanumeric', status=400)
 	    query = """select * from configure as c, device_state as r where r.rid = c.rid and c.rid = %s"""
-            cur.execute(query, (rid))
-            reco = cur.fetchall()
-            if reco == None:	
+            cur.execute(query, (rid, ))
+            record = cur.fetchone()
+            if record == None:	
 	        return Response('no configurations created for given rid', status=204)
 	    else:	
 	        if did != None:
-		    if did in reco["device_list"]:
-	                d = {"configurations" : reco[0]["configurations"]}
-		        return make_response(jsonify(d), status=200)
-	            else:
-		        return Response('invalid did', status=400)
+		    for device_list in record[5]:
+			try:
+		            device_present = device_list.index(did[0])
+	                    device_status = {"configurations" : record[1]}
+		            return make_response(jsonify(device_status), 200)
+	                except Exception as ValueError:
+		            return Response('invalid did', status=400)
 	        else:
-		    d = {"configurations" : reco[0]["configurations"]}
-		    return make_response(jsonify(d),status=200)
+		    device_status = {"configurations" : record[1]}
+		    return make_response(jsonify(device_status), 200)
 	else:
 	    return Response('rid missing', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
 
 @app.route('/open/channel', methods=['POST'])
 def opchannel():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    rid = user.get('rid')
-    if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)):
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    rid = body.get('rid')
+    if (user_id.isalnum() == False):
 	return Response('Id should be only alphanumeric', status=400) 
-    if verify_password(uid, pwd):
-	query = """select * from reservations as r, reservations_info as i, device_state as s where r.rid = i.rid and r.rid = s.rid and i.uid = %s"""
-        cur.execute(query, (uid))
-    	info = cur.fetchone()
-        if info != None:
-	    n = datetime.now()
-	    now = time.mktime(n.timetuple())
-	    st = info['st']
-	    et = info['et']
-	    if (now >= st) & (et >= now):
-		query = """select distinct s.device_list from device_state as s, reservations as r, reservations_info as i where i.uid = %s  and i.rid != %s and r.rid = i.rid and i.rid = s.rid and r.state = %s and i.priority < 3"""
-                cur.execute(query, (uid,rid,'active'))
-    	        i = cur.fetchall()
-		f = 0
-		for row in i:
-		    if list(set(info["device_list"]) & set(row)) != None:
-		        f = 1
-		if f == 0 :    
+    if verify_apikey(user_id, user_apikey):
+	if rid == None:
+	    return Response('rid missing',status=400)
+	if rid.isalnum() == False:
+	    return Response('rid should be only alphanumeric', status=400) 
+	query = """select * from reservations as r, reservations_info as i, device_state as s where r.rid = i.rid and r.rid = s.rid and i.uid = %s and r.rid = %s"""
+        cur.execute(query, (user_id,rid))
+    	reservation_info = cur.fetchone()
+        if reservation_info != None:
+	    now_time = datetime.now()
+	    now_seconds = time.mktime(now_time.timetuple())
+	    start_time = reservation_info[3]
+	    end_time = reservation_info[4]
+	    if (now_seconds >= start_time) & (end_time >= now_seconds):
+		query = """select * from device_state as s, reservations as r, reservations_info as i where i.uid = %s  and i.rid != %s and r.rid = i.rid and i.rid = s.rid and r.state = %s and i.priority < 3"""
+                cur.execute(query, (user_id,rid,'active'))
+    	        records = cur.fetchall()
+		flag = 0
+		for device_list in reservation_info[13]:
+		    for row in records:
+			if(all(device in device_list for device in row[1])):
+			        flag = 1
+		if flag == 0 :    
 		    cid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
 		    query = """UPDATE reservations_info set cid = %s where rid = %s"""
     		    cur.execute(query, (cid,rid))
                     connection.commit()
-		    query = """UPDATE reservations set state = %s where rid = %s"""
+		    query = """UPDATE reservations set state = %s where rid = %s""" 
     		    cur.execute(query, ('active',rid))
                     connection.commit()
-		    d = {"cid": cid}
-		    return make_response(jsonify(d), 200)
+		    channel_id_response = {"cid": cid}
+		    return make_response(jsonify(channel_id_response), 200)
 		else:
 		    return Response('high priority task executing', status=409)
 	    else:
 		return Response('time outside reservation time', status=405)
 	else:
-	    return Response('rid invalid or missing', status=400)
+	    return Response('rid invalid', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
     
     
 @app.route('/close/channel', methods=['POST'])
 def clchannel():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    cid = user.get('cid')
-    rid = user.get('rid')
-    if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    cid = body.get('cid')
+    rid = body.get('rid')
+    if (user_id.isalnum() == False) :
 	return Response('Id should be only alphanumeric', status=400) 
-    if verify_password(uid, pwd):
-	if (rid != None) | (cid != None):
-	    query = """select * from reservations_info where uid = %s and (rid = %s | cid = %s) and cid != %s"""
-            cur.execute(query, (uid,rid,cid,NULL))
-    	    info = cur.fetchone()
-            if info != None:
-	        sql_del_query = """Delete from reservations_info where rid = %s"""
-                cur.execute(sql_del_query, (info['rid']))
-                connection.commit()
-	        return Response('channel closed', status=200)
-	    else:
-	        return Response('cid or rid invalid', status=400)
+    if verify_apikey(user_id, user_apikey):
+	if (rid != None) & (cid != None):	
+	    return Response('rid or cid missing', status=400)
+	elif rid != None:
+	    query = """select * from reservations_info where uid = %s and rid = %s  and cid != 'null'"""
+            cur.execute(query, (user_id,rid))
+    	    reservation_info = cur.fetchone()
+	elif cid != None:
+	    query = """select * from reservations_info where uid = %s and cid = %s"""
+            cur.execute(query, (user_id,cid))
+    	    reservation_info = cur.fetchone()
+        if reservation_info != None:
+	    sql_delete_query = """Delete from reservations_info where rid = %s"""
+            cur.execute(sql_delete_query, (reservation_info[0], ))
+            connection.commit()
+	    return Response('channel closed', status=200)
 	else:
-	        return Response('cid or rid missing', status=400)
+	    return Response('cid or rid invalid', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
 
 
 @app.route('/suspend/channel', methods=['POST'])
 def schannel():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    cid = user.get('cid')
-    rid = user.get('rid')
-    if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    cid = body.get('cid')
+    rid = body.get('rid')
+    if (user_id.isalnum() == False) :
 	return Response('Id should be only alphanumeric', status=400) 
-    if verify_password(uid, pwd):
-	if (rid != None) | (cid != None):
-	    query = """select * from reservations_info where uid = %s and (rid = %s | cid = %s) and cid != %s"""
-            cur.execute(query, (uid,rid,cid,NULL))
+    if verify_apikey(user_id, user_apikey):
+	if (rid != None) & (cid != None):
+	    return Response('rid or cid missing', status=400)
+	elif rid != None:
+	    query = """select * from reservations_info where uid = %s and rid = %s and cid != 'null'"""
+            cur.execute(query, (user_id,rid))
     	    record = cur.fetchone()
+	elif cid != None:
+	    query = """select * from reservations_info where uid = %s and cid = %s"""
+            cur.execute(query, (user_id,cid))
+    	    record = cur.fetchone()
+        if record != None:
 	    query = """select * from reservations where rid = %s"""
-            cur.execute(query, (record["rid"]))
-    	    rd = cur.fetchone()
-            if record != None:
-	        now = datetime.now()
-	        et_obj = rd['et']
-	        now_obj = time.mktime(now.timetuple())
-	        if (now_obj < et_obj):
-		    query = """UPDATE reservations set state = %s where rid = %s"""
-    		    cur.execute(query, ('paused',record['rid']))
-                    connection.commit()
-		    return Response('channel suspended', status=200)
-	        else:
-		    return Response('reservation time exceeded', status=405)
+            cur.execute(query, (record[0], ))
+    	    reservation_info = cur.fetchone()
+	    time_now = datetime.now()
+	    end_time = reservation_info[4]
+	    now_seconds = time.mktime(time_now.timetuple())
+	    if (now_seconds < end_time):
+		query = """UPDATE reservations set state = %s where rid = %s"""
+    		cur.execute(query, ('paused',record[0]))
+                connection.commit()
+		return Response('channel suspended', status=200)
 	    else:
-		return Response('cid or rid invalid', status=400)
+		return Response('reservation time exceeded', status=405)
 	else:
-	    return Response('cid or rid missing', status=400)
+	    return Response('cid or rid invalid', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
     
 
 @app.route('/resume/channel', methods=['POST'])
 def rchannel():
     try:
-	user=json.loads(request.data)
+	body = json.loads(request.data)
     except Exception as e:
 	return Response("Invalid body", status=400)
-    uid = request.headers['id']
-    pwd = request.headers['password']
-    cid = user.get('cid')
-    rid = user.get('rid')
-    if (uid.isalnum() == False) | ((rid != None) & (rid.isalnum() == False)) | ((cid != None) & (cid.isalnum() == False)):
+    user_id = request.headers['id']
+    user_apikey = request.headers['apikey']
+    cid = body.get('cid')
+    rid = body.get('rid')
+    if (user_id.isalnum() == False) :
 	return Response('Id should be only alphanumeric', status=400) 
-    if verify_password(uid, pwd):
-	if (rid != None) | (cid != None):
-	    query = """select * from reservations_info where uid = %s and (rid = %s | cid = %s) and cid != %s"""
-            cur.execute(query, (uid,rid,cid,NULL))
+    if verify_apikey(user_id, user_apikey):
+	if (rid != None) & (cid != None):
+	    return Response('rid or cid missing', status=400)
+	elif rid != None:
+	    query = """select * from reservations_info as i,reservations as r where i.uid = %s and i.rid = %s and i.cid != 'null' and r.rid = i.rid"""
+            cur.execute(query, (user_id,rid))
     	    record = cur.fetchone()
-	    query = """select * from reservations where rid = %s"""
-            cur.execute(query, (record["rid"]))
-    	    info = cur.fetchone()
-            if record != None:
-	        n = datetime.now()
-	        et_obj = info['et']
-	        now = time.mktime(n.timetuple())
-	        if now > et_obj:
-		    return Response('reservation time exceeded', status=405)
-	        else:
-		    q = """select * from reservations where rid = %s and state = %s"""
-		    cur.execute(q, (record['rid'],'paused'))
-                    reco = cur.fetchone()
-		    if reco != None:
-		        query = """UPDATE reservations set state = %s where rid = %s"""
-    		        cur.execute(query, ('resumed',record['rid']))
-                        connection.commit()
-		        return Response('channel resumed', status=200)
-		    else:
-		        return Response('channel not suspended', status=400)
+	elif cid != None:
+	    query = """select * from reservations_info as i,reservations as r where i.uid = %s and i.cid = %s and r.rid = i.rid"""
+            cur.execute(query, (user_id,cid))
+    	    record = cur.fetchone()
+        if record != None:
+	    now_time = datetime.now()
+	    end_time = record[8]
+	    now_seconds = time.mktime(now_time.timetuple())
+	    if now_seconds > end_time:
+		return Response('reservation time exceeded', status=405)
 	    else:
-	        return Response('cid or rid invalid', status=400)
+		query = """select * from reservations where rid = %s and state = %s"""
+		cur.execute(query, (record[0],'paused'))
+                device_status_info = cur.fetchone()
+		if device_status_info != None:
+		    query = """UPDATE reservations set state = %s where rid = %s"""
+    		    cur.execute(query, ('active',record[0]))
+                    connection.commit()
+		    return Response('channel resumed', status=200)
+		else:
+		    return Response('channel not suspended', status=400)
 	else:
-	    return Response('cid or rid missing', status=400)
+	    return Response('cid or rid invalid', status=400)
     else:
-	return Response('invalid user id or password', status=401)
+	return Response('invalid user id or apikey', status=401)
 
 
 def opfunc():
-    n = datetime.now()
-    now = time.mktime(n.timetuple())
-    vnow = now+120
-    query = """select distinct rid from reservation where st <= %s and st >= now"""
-    cur.execute(query, (vnow,now))
-    record = cur.fetchall()
-    if record != None:
-	for info in record:
-	    query = """select distinct s.device_list from device_state as s, reservations as r, reservations_info as i where i.rid != %s and r.rid = i.rid and i.rid = s.rid and r.state = %s and i.priority < 3"""
-            cur.execute(query, (info['rid'],'active'))
-    	    i = cur.fetchall()
-            f = 0
-	    query = """select device_list from device_state where rid = %s"""
-            cur.execute(query, (info['rid']))
-            record = cur.fetchone()
-	    for row in i:
-		if list(set(info["device_list"]) & set(row)) != None:
-		    f = 1
-	    if f == 0 :    
+    time_now = datetime.now()
+    now_seconds = time.mktime(time_now.timetuple())
+    now_interval = now_seconds+120
+    query = """select * from device_state as s,reservations as r where r.st <= %s and r.st >= %s and r.rid = s.rid"""
+    cur.execute(query, (now_interval,now_seconds))
+    records = cur.fetchall()
+    if records != None:
+	for record in records:
+	    query = """select * from device_state as s, reservations as r, reservations_info as i where i.rid != %s and r.rid = i.rid and i.rid = s.rid and r.state = %s and i.priority < 3"""
+            cur.execute(query, (record[0],'active'))
+    	    reservation_info = cur.fetchall()
+            flag = 0
+	    for device_list in record[1]:
+		for row in reservation_info:
+		    if(all(device in device_list for device in row[1])):
+			f = 1
+	    if flag == 0 :    
 	        query = """UPDATE reservations set state = %s where rid = %s"""
-    		cur.execute(query, ('active',info['rid']))
+    		cur.execute(query, ('active',record[0]))
                 connection.commit()
 	    else:
 		return Response('high priority task executing', status=409)
@@ -937,59 +1059,60 @@ def opfunc():
 
 
 def clfunc():
-    n = datetime.now()
-    now = time.mktime(n.timetuple())
-    vnow = now + 120
+    time_now = datetime.now()
+    now_seconds = time.mktime(time_now.timetuple())
+    now_interval = now_seconds + 120
     query = """select * from reservations where et >= %s and et <= %s"""
-    cur.execute(query, (now,vnow))
-    record = cur.fetchall()
-    if record != None:	
-	for info in record:
-	    if info['et'] == info['ret']:
+    cur.execute(query, (now_seconds,now_interval))
+    records = cur.fetchall()
+    if records != None:	
+	for record in records:
+	    if record[4] == record[2]:
 	        sql_delete_query = """Delete from write_op where rid = %s"""
-                cur.execute(sql_delete_query, (info['rid']))
-                connection.commit()
-	        sql_delete_query = """Delete from reservations where rid = %s"""
-                cur.execute(sql_delete_query, (info['rid']))
+                cur.execute(sql_delete_query, (record[0], ))
                 connection.commit()
 	        sql_ = """Delete from configure where rid = %s"""
-                cur.execute(sql_, (info['rid']))
+                cur.execute(sql_, (record[0], ))
                 connection.commit()
 	        delete_query = """Delete from reservations_info where rid = %s"""
-                cur.execute(delete_query, (info['rid']))
+                cur.execute(delete_query, (record[0], ))
                 connection.commit()
 	        sql_query = """Delete from device_state where rid = %s"""
-                cur.execute(sql_query, (info['rid']))
+                cur.execute(sql_query, (record[0], ))
+                connection.commit()
+		sql_delete_query = """Delete from reservations where rid = %s"""
+                cur.execute(sql_delete_query, (record[0], ))
                 connection.commit()
 		return Response('reservation time exceeded', status=200)	
 	    else:
-		f = info['frequency']
-		if f == "hourly":
-		    st = info['st'] + 3600
-		    et = st+info['duration']
-		if f == "daily":
-		    st = info['st'] + 3600*24
-		    et = st+info['duration']
-		if f == "weekly":
-		    st = info['st'] + 3600*24*7
-		    et = st+info['duration']
-		query = """UPDATE reservations set state = %s and st = %s and et = %s where rid = %s"""
-    		cur.execute(query, ('inactive',st,et,info['rid']))
+		frequency = record[6]
+		if frequency == "hourly":
+		    start_time = record[3] + 3600
+		    end_time = start_time + record[7]
+		if frequency == "daily":
+		    start_time = record[3] + 3600*24
+		    end_time = start_time + record[7]
+		if frequency == "weekly":
+		    start_time = record[3] + 3600*24*7
+		    end_time = start_time + record[7]
+		query = """UPDATE reservations set state = %s, st = %s, et = %s where rid = %s"""
+    		cur.execute(query, ('inactive',start_time,end_time,record[0]))
                 connection.commit()
 	        return Response('operation time exceeded', status=200)
     else:
 	return Response('', status=200)
 
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(func=opfunc, trigger="interval", minutes=1)
-scheduler.add_job(func=clfunc, trigger="interval", minutes=1)
-scheduler.start()
+sched = BackgroundScheduler(daemon=True)
+sched.add_job(opfunc,'interval',minutes=1)
+sched.add_job(clfunc,'interval',minutes=1)
+sched.start()
 
-def priority():
+def setpriority():
     return 3
 
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host="0.0.0.0", debug=False, ssl_context="adhoc", port=443)
+   
