@@ -1131,7 +1131,7 @@ def clchannel():
             connection.commit()
 	    return Response('channel closed', status=200)
 	else:
-	    return Response('cid or rid invalid', status=400)
+	    return Response('cid or rid invalid or time outside reservation time', status=400)
     else:
 	return Response('invalid user id or apikey', status=401)
 
@@ -1181,7 +1181,7 @@ def schannel():
 	    else:
 		return Response('reservation time exceeded', status=405)
 	else:
-	    return Response('cid or rid invalid', status=400)
+	    return Response('cid or rid invalid or time outside reservation time', status=400)
     else:
 	return Response('invalid user id or apikey', status=401)
     
@@ -1234,7 +1234,7 @@ def rchannel():
 		else:
 		    return Response('channel not suspended', status=400)
 	else:
-	    return Response('cid or rid invalid', status=400)
+	    return Response('cid or rid invalid or time outside reservation time', status=400)
     else:
 	return Response('invalid user id or apikey', status=401)
 
