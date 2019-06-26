@@ -4,7 +4,6 @@ from flask import Flask, request, Response, jsonify, make_response
 
 from werkzeug.security import generate_password_hash, check_password_hash
 import json
-from flask_httpauth import HTTPBasicAuth
 from datetime import datetime
 import random
 import string
@@ -16,7 +15,7 @@ import time
 
 
 app = Flask(__name__)
-auth = HTTPBasicAuth()
+
 
 
 
@@ -28,8 +27,12 @@ def add_user():
     try:
 	body = json.loads(request.data)
     except Exception as e:
-	return Response("i=Invalid body",status=400)
-    user_id = body["id"]
+	return Response("Invalid body",status=400)
+    try:
+        user_id = body["id"]
+    except Exception as e:
+	return Response("Missing id",status=400)
+        
     if user_id.isalnum() == False:
 	return Response('Id should be only alphanumeric', status=400) 
     if len(str(user_id)) > 50:
@@ -124,7 +127,7 @@ def upgroup( gid):
 	try:
 	    body = json.loads(request.data)
 	except Exception as e:
-	    return Response("i=Invalid body", status=400)
+	    return Response("Invalid body", status=400)
 	try:
             user_id = request.headers['id']
             user_apikey = request.headers['apikey']
@@ -204,7 +207,7 @@ def reserve():
 	return Response('Id should be only alphanumeric', status=400) 
     gid = body.get("gid")
     frequency = body.get("frequency")
-    valid_frequency = "hourly daily weekly"
+    valid_frequency = "hourly daily weekly null"
     if frequency != None:
 	index_of_frequency = valid_frequency.find(str(frequency))
 	if (frequency.isalpha() == False) | (index_of_frequency == -1):
@@ -234,14 +237,17 @@ def reserve():
 	if duration == None:
 	    return Response('duration missing', status=400)
 	else:
-	    first_index = duration.find(':')
-	    last_index = duration.rfind(':')
-	    if first_index == last_index :
-		hours = 0
-		minutes,seconds = duration.split(':')
+	    if ':' in duration:
+	    	first_index = duration.find(':')
+	    	last_index = duration.rfind(':')
+	    	if first_index == last_index :
+		    hours = 0
+		    minutes,seconds = duration.split(':')
+	        else:
+	            hours,minutes,seconds = duration.split(':')
+                duration_seconds = int(hours)*3600 + int(minutes)*60 + int(seconds)
 	    else:
-	        hours,minutes,seconds = duration.split(':')
-            duration_seconds = int(hours)*3600 + int(minutes)*60 + int(seconds)
+		duration_seconds = int(duration)
             start_time = reservation_start_time
             end_time = reservation_start_time + duration_seconds
 	    reservation_time = reservation_end_time - reservation_start_time
@@ -289,7 +295,7 @@ def upreserve(rid):
 	try:
 	    body = json.loads(request.data)
 	except Exception as e:
-	    return Response("i=Invalid body", status=400)
+	    return Response("Invalid body", status=400)
 	try:
             user_id = request.headers['id']
             user_apikey = request.headers['apikey']
@@ -299,7 +305,7 @@ def upreserve(rid):
 	    return Response('Id should be only alphanumeric', status=400) 
 	frequency = body.get("frequency")
 	duration = body.get("duration")
-	valid_frequency = "hourly daily weekly"
+	valid_frequency = "hourly daily weekly null"
 	if frequency != None:
 	    index_of_frequency = valid_frequency.find(str(frequency))
 	    if (frequency.isalpha() == False) | (index_of_frequency == -1):
@@ -351,14 +357,17 @@ def upreserve(rid):
 		    frequency = record[6]
 		end_time = record[4]
 		if duration != None:
-		    first_index = duration.find(':')
-	    	    last_index = duration.rfind(':')
-	    	    if first_index == last_index :
-		        hours = 0
-		        minutes,seconds = duration.split(':')
-	            else:
-	                hours,minutes,seconds = duration.split(':')
-                    duration_seconds = int(hours)*3600 + int(minutes)*60 + int(seconds)
+		    if ':' in duration:
+		        first_index = duration.find(':')
+	    	    	last_index = duration.rfind(':')
+	    	    	if first_index == last_index :
+		       	    hours = 0
+		            minutes,seconds = duration.split(':')
+	                else:
+	                    hours,minutes,seconds = duration.split(':')
+                        duration_seconds = int(hours)*3600 + int(minutes)*60 + int(seconds)
+		    else:
+			duration_seconds = int(duration)
                     end_time = start_time + duration_seconds
 		else:
 		    duration_seconds = record[7]
@@ -372,6 +381,10 @@ def upreserve(rid):
 			flag = 1
 	        if flag == 0:
 		    reservation_time = reservation_end_time - reservation_start_time
+		    time_now = datetime.now()
+    		    now_seconds = time.mktime(time_now.timetuple())
+    		    if (reservation_start_time > reservation_end_time) | (reservation_start_time < now_seconds):
+			return Response('invalid date time', status=400)
 		    if duration_seconds > reservation_time:
 			return Response('duration exceeds reservation time', status=400)
 		    sql_update_query = """UPDATE reservations set rst = %s, ret = %s, frequency = %s, st = %s, et = %s, duration = %s where rid = %s"""
@@ -426,7 +439,7 @@ def configure():
 	try:
 	    body = json.loads(request.data)
 	except Exception as e:
-	    return Response("i=Invalid body", status=400)
+	    return Response("Invalid body", status=400)
 	try:
             user_id = request.headers['id']
             user_apikey = request.headers['apikey']
@@ -435,6 +448,8 @@ def configure():
 	rid = body.get('rid')
 	did_list = body.get('id')
 	cid = body.get('cid')
+	reservation_info1 = None
+	reservation_info2 = None
 	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
 	configurations = body.get('configurations')
@@ -459,15 +474,17 @@ def configure():
 	    	    return Response('rid should be only alphanumeric', status=400) 
 	        query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
 	        cur.execute(query, (rid,user_id))
-    	        reservation_info = cur.fetchone()
-	    elif cid != None:
-		if (cid.isalnum() == False) :
-	    	    return Response('cid should be only alphanumeric', status=400) 
-		query = """select * from reservations_info where cid = %s and uid = %s"""		    
-	        cur.execute(query, (cid,user_id))
-    	        reservation_info = cur.fetchone()
-	    if reservation_info == None:
+    	        reservation_info1 = cur.fetchone()
+	    if reservation_info1 == None:
+	        if cid != None:
+		    if (cid.isalnum() == False) :
+	    	        return Response('cid should be only alphanumeric', status=400) 
+		    query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	            cur.execute(query, (cid,user_id))
+    	            reservation_info2 = cur.fetchone()
+	    if (reservation_info1 == None) & (reservation_info2 == None):
 		return Response('invalid rid or cid', status=400)
+	    reservation_info = reservation_info1 if reservation_info1 != None else reservation_info2
 	    query = """select * from device_state where rid = %s"""
 	    cur.execute(query, (reservation_info[0], ))
     	    device_info = cur.fetchone()
@@ -480,11 +497,10 @@ def configure():
 	        if reservation_info != None:		    
 		    if configurations != None:
 		        if did_list != None:
-	                    flag = 0
+	                    flag = False
 			    for device_list in device_info[1]:
-			        if all(device in device_list for device in did_list):
-			            flag = 1
-			    if flag:			
+			        flag = all(device in device_list for device in did_list)
+			    if flag == True:			
 			        cur.execute("""INSERT INTO configure (rid,configurations,type,id) VALUES (%s,%s,%s,%s)""",(reservation_info[0],json.dumps(configurations),'sync',json.dumps(did_list)))
     		                connection.commit()	
 		                return Response('configurations stored', status=200)
@@ -517,7 +533,8 @@ def configure():
 	    return Response('Id should be only alphanumeric', status=400) 
 	cid = body.get('cid')
 	rid = body.get('rid')
-	did_list = body.get('id')
+	record1 = None
+	record2 = None
 	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
 	configurations = body.get('configurations')
@@ -546,15 +563,17 @@ def configure():
 	    	    return Response('rid should be only alphanumeric', status=400) 
 		query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
 	        cur.execute(query, (rid,user_id))
-    	        record = cur.fetchone()
-	    elif cid != None:
-		if (cid.isalnum() == False) :
-	    	    return Response('cid should be only alphanumeric', status=400) 
-		query = """select * from reservations_info where cid = %s and uid = %s"""		    
-	        cur.execute(query, (cid,user_id))
-    	        record = cur.fetchone()
-	    if record == None:
+    	        record1 = cur.fetchone()
+	    if record1 == None:
+	        if cid != None:
+		    if (cid.isalnum() == False) :
+	    	        return Response('cid should be only alphanumeric', status=400) 
+		    query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	            cur.execute(query, (cid,user_id))
+    	            record2 = cur.fetchone()
+	    if (record1 == None) & (record2 == None):
 		return Response('invalid rid or cid', status=400)
+	    record = record1 if record1 != None else record2
 	    query = """select * from configure where rid = %s and type = %s"""
     	    cur.execute(query, (record[0],'sync'))
             configuration_record = cur.fetchone()
@@ -585,6 +604,8 @@ def configure():
 	if user_id.isalnum() == False:
 	    return Response('Id should be only alphanumeric', status=400) 
 	cid = body.get('cid')
+	record1 = None
+	record2 = None
 	rid = body.get('rid')
 	if (user_id.isalnum() == False):
 	    return Response('Id should be only alphanumeric', status=400) 
@@ -608,16 +629,23 @@ def configure():
 	    elif rid != None:
 		if (rid.isalnum() == False) :
 	    	    return Response('rid should be only alphanumeric', status=400) 
-		query = """select * from configure as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.rid = %s and r.cid != 'null' and r.uid = %s"""
-    		cur.execute(query, ('sync',rid,user_id))
-                record = cur.fetchone()
-	    elif cid != None:
-		if (cid.isalnum() == False) :
-	    	    return Response('cid should be only alphanumeric', status=400) 
-		query = """select * from configure as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.cid = %s and r.uid = %s"""
-    		cur.execute(query, ('sync',cid,user_id))
-                record = cur.fetchone()
-	    if record != None:
+		query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
+	        cur.execute(query, (rid,user_id))
+    	        record1 = cur.fetchone()
+	    if record1 == None:
+	        if cid != None:
+		    if (cid.isalnum() == False) :
+	    	        return Response('cid should be only alphanumeric', status=400) 
+		    query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	            cur.execute(query, (cid,user_id))
+    	            record2 = cur.fetchone()
+	    if (record1 == None) & (record2 == None):
+		return Response('invalid cid or rid',status=400)
+	    record = record1 if record1 != None else record2
+	    query = """select * from configure where rid = %s and type = %s"""
+    	    cur.execute(query, (record[0],'sync'))
+            configuration_record = cur.fetchone()
+	    if configuration_record != None:
 		query = """Delete from configure where type = %s  and rid = %s"""
                	cur.execute(query, ( 'sync',record[0]))
                 connection.commit()
@@ -643,6 +671,8 @@ def write():
 	cid = body.get('cid')
 	did_list = body.get('id')
 	rid = body.get('rid')
+	reservation_info1 = None
+	reservation_info2 = None
 	if user_id.isalnum() == False:
 	    return Response('Id should be only alphanumeric', status=400) 
 	content = body.get('content')
@@ -667,15 +697,17 @@ def write():
 	    	    return Response('rid should be only alphanumeric', status=400) 
 	        query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
 	        cur.execute(query, (rid,user_id))
-    	        reservation_info = cur.fetchone()
-	    elif cid != None:
-		if (cid.isalnum() == False) :
-	    	    return Response('cid should be only alphanumeric', status=400) 
-	        query = """select * from reservations_info where cid = %s and uid = %s"""		    
-	        cur.execute(query, (cid,user_id))
-    	        reservation_info = cur.fetchone()
-	    if reservation_info == None:
+    	        reservation_info1 = cur.fetchone()
+	    if reservation_info1 == None:
+	        if cid != None:
+		    if (cid.isalnum() == False) :
+	    	        return Response('cid should be only alphanumeric', status=400) 
+	            query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	            cur.execute(query, (cid,user_id))
+    	            reservation_info2 = cur.fetchone()
+	    if (reservation_info1 == None) & (reservation_info2 == None):
 		return Response('invalid rid or cid', status=400)
+	    reservation_info = reservation_info1 if reservation_info1 != None else reservation_info2
 	    query = """select * from write_op where rid = %s and type = %s"""
     	    cur.execute(query, (reservation_info[0],'sync'))
             record = cur.fetchone()
@@ -720,6 +752,8 @@ def write():
 	    return Response("Invalid header", status=400)
 	cid = body.get('cid')
 	rid = body.get('rid')
+	record1 = None
+	record2 = None
 	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
 	content = body.get('content')
@@ -741,22 +775,29 @@ def write():
 			return Response('content to be updated not written yet', status=400)
 		else:
 		    return Response('content missing', status=400)
-	    if (rid != None) & (cid != None):
+	    if (rid == None) & (cid == None):
 		return Response('rid or cid missing', status=400)
 	    elif rid != None:
 		if (rid.isalnum() == False) :
 	    	    return Response('rid should be only alphanumeric', status=400) 
-		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.rid = %s and r.cid != 'null' and r.uid = %s"""
-    		cur.execute(query, ('sync',rid,user_id))
-                record = cur.fetchone()
-	    elif cid != None:
-		if (cid.isalnum() == False) :
-	    	    return Response('cid should be only alphanumeric', status=400) 
-		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.cid = %s and r.uid = %s"""
-    		cur.execute(query, ('sync',cid,user_id))
-                record = cur.fetchone()
+		query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
+	        cur.execute(query, (rid,user_id))
+    	        record1 = cur.fetchone()
+	    if record1 == None:
+	        if cid != None:
+		    if (cid.isalnum() == False) :
+	    	        return Response('cid should be only alphanumeric', status=400) 
+		    query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	            cur.execute(query, (cid,user_id))
+    	            record2 = cur.fetchone()
+	    if (record1 == None) & (record2 == None):
+		return Response('invalid cid or rid',status=400)
 	    if content != None:  
-	        if record != None:	
+		record = record1 if record1 != None else record2	
+		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.rid = %s and r.cid != 'null' and r.uid = %s"""
+    		cur.execute(query, ('sync',record[0],user_id))
+                write_record = cur.fetchone()
+		if write_record != None:
 		    query = """UPDATE write_op set content = %s where rid = %s and type = %s"""
     		    cur.execute(query, (json.dumps(content),record[0],'sync'))
                     connection.commit()
@@ -781,6 +822,8 @@ def write():
 	    return Response("Invalid header", status=400)
 	cid = body.get('cid')
 	rid = body.get('rid')
+	record1 = None
+	record2 = None
 	if (user_id.isalnum() == False) :
 	    return Response('Id should be only alphanumeric', status=400) 
 	if verify_apikey(user_id, user_apikey):
@@ -803,16 +846,23 @@ def write():
 	    elif rid != None:
 		if (rid.isalnum() == False) :
 	    	    return Response('rid should be only alphanumeric', status=400) 
-		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.rid = %s and r.cid != 'null' and r.uid = %s"""
-    		cur.execute(query, ('sync',rid,user_id))
-                record = cur.fetchone()
-	    elif cid != None:
-		if (cid.isalnum() == False) :
-	    	    return Response('cid should be only alphanumeric', status=400) 
-		query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.cid = %s and r.uid = %s"""
-    		cur.execute(query, ('sync',cid,uid))
-                record = cur.fetchone()
-	    if record != None:
+		query = """select * from reservations_info where rid = %s and uid = %s and cid != 'null'"""		    
+	        cur.execute(query, (rid,user_id))
+    	        record1 = cur.fetchone()
+	    if record1 == None:
+	        if cid != None:
+		    if (cid.isalnum() == False) :
+	    	        return Response('cid should be only alphanumeric', status=400) 
+		    query = """select * from reservations_info where cid = %s and uid = %s"""		    
+	            cur.execute(query, (cid,user_id))
+    	            record2 = cur.fetchone()
+	    if (record1 == None) & (record2 == None):
+		return Response('invalid cid or rid',status=400)
+	    record = record1 if record1 != None else record2
+	    query = """select * from write_op as c, reservations_info as r where c.rid = r.rid and c.type = %s and r.rid = %s and r.cid != 'null' and r.uid = %s"""
+    	    cur.execute(query, ('sync',record[0],user_id))
+            write_record = cur.fetchone()
+	    if write_record != None:
 		query = """Delete from write_op where type = %s  and rid = %s"""
                	cur.execute(query, ( 'sync',record[0]))
                 connection.commit()
@@ -977,10 +1027,10 @@ def opstat():
 	    query = """select * from device_state as s, reservations as r, reservations_info as i where s.rid = r.rid and r.rid = %s and i.rid = r.rid and i.uid = %s"""
             cur.execute(query, (rid,user_id))
             record = cur.fetchone()
-	    if record == []:	
-	        return Response('invalid rid', status=204)
+	    if record == None:	
+	        return Response('invalid rid', status=400)
 	    if did != None:
-	        for device_list in reco[1]:
+	        for device_list in record[1]:
 		    try:
 		        device_present = device_list.index(did[0])
 	                device_status = {"status": record[7]}
@@ -1017,6 +1067,11 @@ def devstat():
 	if rid != None:
 	    if rid.isalnum() == False:
 		return Response('rid should be only alphanumeric', status=400)
+	    query = """select * from reservations_info where rid = %s and uid = %s"""
+	    cur.execute(query, (rid,user_id))
+            reservation_record = cur.fetchone()
+	    if reservation_record == None:
+		return Response('invalid rid', status=400)
 	    query = """select * from configure as c, device_state as r, reservations_info as i where r.rid = c.rid and c.rid = %s and i.rid = r.rid and i.uid = %s"""
             cur.execute(query, (rid,user_id))
             record = cur.fetchone()
@@ -1108,27 +1163,36 @@ def clchannel():
 	return Response("Invalid header", status=400)
     cid = body.get('cid')
     rid = body.get('rid')
+    reservation_info1 = None
+    reservation_info2 = None
     if (user_id.isalnum() == False) :
 	return Response('Id should be only alphanumeric', status=400) 
     if verify_apikey(user_id, user_apikey):
-	if (rid != None) & (cid != None):	
+	if (rid == None) & (cid == None):	
 	    return Response('rid or cid missing', status=400)
 	elif rid != None:
 	    if (rid.isalnum() == False) :
 	    	return Response('rid should be only alphanumeric', status=400) 
-	    query = """select * from reservations_info where uid = %s and rid = %s  and cid != 'null'"""
+	    query = """select * from reservations_info as i,reservations as r where i.uid = %s and i.rid = %s  and i.cid != 'null' and i.rid = r.rid"""
             cur.execute(query, (user_id,rid))
-    	    reservation_info = cur.fetchone()
-	elif cid != None:
-	    if (cid.isalnum() == False) :
-	    	return Response('cid should be only alphanumeric', status=400) 
-	    query = """select * from reservations_info where uid = %s and cid = %s"""
-            cur.execute(query, (user_id,cid))
-    	    reservation_info = cur.fetchone()
-        if reservation_info != None:
-	    sql_delete_query = """Delete from reservations_info where rid = %s"""
-            cur.execute(sql_delete_query, (reservation_info[0], ))
-            connection.commit()
+    	    reservation_info2 = cur.fetchone()
+	if reservation_info2 == None:
+	    if cid != None:
+	        if (cid.isalnum() == False) :
+	    	    return Response('cid should be only alphanumeric', status=400) 
+	        query = """select * from reservations_info as i, reservations as r where i.uid = %s and i.cid = %s and i.rid = r.rid"""
+                cur.execute(query, (user_id,cid))
+    	        reservation_info1 = cur.fetchone()
+        if (reservation_info2 != None) | (reservation_info1 != None):
+	    reservation_info = reservation_info2 if reservation_info2 != None else reservation_info1
+	    if reservation_info[6] == reservation_info[8]:
+	    	sql_delete_query = """Delete from reservations_info where rid = %s"""
+            	cur.execute(sql_delete_query, (reservation_info[0], ))
+            	connection.commit()
+	    else:
+		sql_update_query = """update reservations_info set cid = %s where rid = %s"""
+            	cur.execute(sql_update_query, ('null',reservation_info[0] ))
+            	connection.commit()
 	    return Response('channel closed', status=200)
 	else:
 	    return Response('cid or rid invalid or time outside reservation time', status=400)
@@ -1149,24 +1213,28 @@ def schannel():
 	return Response("Invalid header", status=400)
     cid = body.get('cid')
     rid = body.get('rid')
+    record2 = None
+    record1 = None
     if (user_id.isalnum() == False) :
 	return Response('Id should be only alphanumeric', status=400) 
     if verify_apikey(user_id, user_apikey):
-	if (rid != None) & (cid != None):
+	if (rid == None) & (cid == None):
 	    return Response('rid or cid missing', status=400)
 	elif rid != None:
 	    if (rid.isalnum() == False) :
 	    	return Response('rid should be only alphanumeric', status=400) 
 	    query = """select * from reservations_info where uid = %s and rid = %s and cid != 'null'"""
             cur.execute(query, (user_id,rid))
-    	    record = cur.fetchone()
-	elif cid != None:
-	    if (cid.isalnum() == False) :
-	    	return Response('cid should be only alphanumeric', status=400) 
-	    query = """select * from reservations_info where uid = %s and cid = %s"""
-            cur.execute(query, (user_id,cid))
-    	    record = cur.fetchone()
-        if record != None:
+    	    record2 = cur.fetchone()
+	if record2 == None:
+	    if cid != None:
+	        if (cid.isalnum() == False) :
+	    	    return Response('cid should be only alphanumeric', status=400) 
+	        query = """select * from reservations_info where uid = %s and cid = %s"""
+                cur.execute(query, (user_id,cid))
+    	        record1 = cur.fetchone()
+        if (record2 != None) | (record1 != None):
+	    record = record2 if record2 != None else record1
 	    query = """select * from reservations where rid = %s"""
             cur.execute(query, (record[0], ))
     	    reservation_info = cur.fetchone()
@@ -1199,24 +1267,28 @@ def rchannel():
 	return Response("Invalid header", status=400)
     cid = body.get('cid')
     rid = body.get('rid')
+    record2 = None
+    record1 = None
     if (user_id.isalnum() == False) :
 	return Response('Id should be only alphanumeric', status=400) 
     if verify_apikey(user_id, user_apikey):
-	if (rid != None) & (cid != None):
+	if (rid == None) & (cid == None):
 	    return Response('rid or cid missing', status=400)
 	elif rid != None:
 	    if (rid.isalnum() == False) :
 	    	return Response('rid should be only alphanumeric', status=400) 
 	    query = """select * from reservations_info as i,reservations as r where i.uid = %s and i.rid = %s and i.cid != 'null' and r.rid = i.rid"""
             cur.execute(query, (user_id,rid))
-    	    record = cur.fetchone()
-	elif cid != None:
-	    if (cid.isalnum() == False) :
-	    	return Response('cid should be only alphanumeric', status=400) 
-	    query = """select * from reservations_info as i,reservations as r where i.uid = %s and i.cid = %s and r.rid = i.rid"""
-            cur.execute(query, (user_id,cid))
-    	    record = cur.fetchone()
-        if record != None:
+    	    record2 = cur.fetchone()
+	if record2 == None:
+	    if cid != None:
+	        if (cid.isalnum() == False) :
+	    	    return Response('cid should be only alphanumeric', status=400) 
+	        query = """select * from reservations_info as i,reservations as r where i.uid = %s and i.cid = %s and r.rid = i.rid"""
+                cur.execute(query, (user_id,cid))
+    	        record1 = cur.fetchone()
+        if (record2 != None) | (record1 != None):
+	    record = record2 if record2 != None else record1
 	    now_time = datetime.now()
 	    end_time = record[8]
 	    now_seconds = time.mktime(now_time.timetuple())
@@ -1324,7 +1396,9 @@ def clfunc():
 		    query = """UPDATE reservations set state = %s, st = %s, et = %s where rid = %s"""
     		    cur.execute(query, ('inactive',start_time,end_time,record[0]))
                     connection.commit()
-	        
+		    query = """UPDATE reservations_info set cid = %s where rid = %s"""
+    		    cur.execute(query, ('null',record[0]))
+                    connection.commit()
     else:
 	return Response('', status=200)
 
