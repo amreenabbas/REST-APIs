@@ -1128,7 +1128,7 @@ def opchannel():
 		flag = False
 		for row in records:
 	            lst3 = [value for value in reservation_info[13] if value in row[1]] 
-		    if lst3 != None:
+		    if lst3 != []:
 			flag = True
     	        if flag == False:	
 		    cid = "".join([random.choice(string.ascii_lowercase + string.digits) for i in range(32)])
