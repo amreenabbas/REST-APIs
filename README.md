@@ -11,11 +11,11 @@ Service API - The service API deals with the physical resources and services in 
 The APIs are written in Flask, a micro webframework written in Python and the PostgreSQL database has been used for storage.
 The APIs are used by users to sign up, create groups of devices and reserve those groups. After obtaining a reservation-id the user can configure the devices and write content to the devices. These APIs are a reference implementation of the write APIs. The database consists of following tables.
 
-devices - It contains list of devices.
-users - It contanis information about the users.
-groups - It contains list of groups made by users. 
-reservations - It conatins information regarding the reservation time. 
-reservations_info - It contains reservation information. 
-device_state - It contains information about devices in a reservation. 
-configure - It contains the device configurations.
-write_op - It contains the device content.
+devices - It contains list of devices.<br>
+users - It contanis information about the users.<br>
+groups - It contains list of groups made by users. <br>
+reservations - It conatins information regarding the reservation time. <br>
+reservations_info - It contains reservation information. <br>
+device_state - It contains information about devices in a reservation. <br>
+configure - It contains the device configurations.<br>
+write_op - It contains the device content.<br>
